@@ -1,4 +1,4 @@
-# LocalHostAgent SDK
+# use-my-llm
 
 **v0.1.0 developer preview** — Add AI features such as summarization, drafting, rewriting, or text analysis to your own website through a local bridge running on the visitor's computer.
 
@@ -13,7 +13,7 @@ Instead of building a stand-alone chat app or collecting provider API keys on yo
 
 ## How it works
 
-1. **The user runs the local bridge** — either from the command line (`localhost-agent`) or via the macOS Apple Silicon menu bar app.
+1. **The user runs the local bridge** — either from the command line (`use-my-llm`) or via the macOS Apple Silicon menu bar app.
 2. **Your website checks status and requests pairing** — on a user click, your page calls `client.status()` and, if not yet connected, `client.pair()`.
 3. **The user approves the exact origin** — `pair()` navigates the tab to the bridge's local approval screen (`http://127.0.0.1:43189/v1/pair...`). After clicking **Allow connection**, the user is redirected back to your page.
 4. **Your page completes pairing and runs AI features** — `client.completePairing()` verifies a tab-scoped nonce, scrubs the URL fragment immediately, and stores a short-lived bearer token in `sessionStorage`. Your UI can then call `client.generate()` or `client.chat()`.
@@ -46,8 +46,8 @@ Providers are configured locally on the visitor's machine. Websites can only req
 ### 1. Build and start the local bridge
 
 ```sh
-git clone https://github.com/ParkerHwang/LocalHostAgentSDK.git
-cd LocalHostAgentSDK
+git clone https://github.com/ParkerHwang/use-my-llm.git
+cd use-my-llm
 npm install
 npm run build
 node packages/bridge/dist/cli.mjs
@@ -79,20 +79,20 @@ Open `http://127.0.0.1:5173/` in a browser on the same computer:
 
 ### Installation
 
-Packages are distributed as **[GitHub v0.1.0 release assets](https://github.com/ParkerHwang/LocalHostAgentSDK/releases/tag/v0.1.0)** and built from source. They are **not published on npm**.
+Packages are distributed as **[GitHub v0.1.0 release assets](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0)** and built from source. They are **not published on npm**.
 
 - **From a local checkout:** after running `npm run build`, install the browser package into your web project:
   ```sh
-  npm install /path/to/LocalHostAgentSDK/packages/browser
+  npm install /path/to/use-my-llm/packages/browser
   ```
-- **From GitHub Releases:** download the browser package archive from the [v0.1.0 release page](https://github.com/ParkerHwang/LocalHostAgentSDK/releases/tag/v0.1.0) and install it with `npm install ./localhost-agent-sdk-browser-0.1.0.tgz` (or serve the compiled ESM module directly, as shown in [`examples/vanilla`](examples/vanilla)).
+- **From GitHub Releases:** download the browser package archive from the [v0.1.0 release page](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0) and install it with `npm install ./localhost-agent-sdk-browser-0.1.0.tgz` (or serve the compiled ESM module directly, as shown in [`examples/vanilla`](examples/vanilla)). That v0.1.0 archive was packed before the rename, so the package name inside the file is `@localhost-agent-sdk/browser`. A checkout of this repository installs as `@use-my-llm/browser`.
 
 ### Browser usage
 
-[`@localhost-agent-sdk/browser`](packages/browser) is a dependency-free ES module with TypeScript declarations.
+[`@use-my-llm/browser`](packages/browser) is a dependency-free ES module with TypeScript declarations.
 
 ```ts
-import { createClient } from '@localhost-agent-sdk/browser';
+import { createClient } from '@use-my-llm/browser';
 
 const client = createClient();
 
@@ -145,7 +145,7 @@ Full types and error codes are in [`packages/browser/src/index.ts`](packages/bro
 
 ### Option A: Node CLI (macOS, Linux, Windows)
 
-After building the repository (`npm run build`), run `node packages/bridge/dist/cli.mjs` (or the `localhost-agent` bin from [`packages/bridge`](packages/bridge)):
+After building the repository (`npm run build`), run `node packages/bridge/dist/cli.mjs` (or the `use-my-llm` bin from [`packages/bridge`](packages/bridge); `localhost-agent` starts the same bridge):
 
 ```sh
 node packages/bridge/dist/cli.mjs [--port 43189] [--allow-origin https://app.example.com ...] [--enable-claude-api] [--enable-antigravity-api]
@@ -158,7 +158,7 @@ node packages/bridge/dist/cli.mjs [--port 43189] [--allow-origin https://app.exa
 
 For macOS 13.5 or later on Apple Silicon (`arm64`), an optional menu bar app bundles Node.js and starts the bridge with default settings on `127.0.0.1:43189` (and registers the `localhostagent://start` URL scheme, which carries no site or provider parameters).
 
-- **Download:** Get `LocalHostAgentSDK-macos-arm64.zip` from the [v0.1.0 release assets](https://github.com/ParkerHwang/LocalHostAgentSDK/releases/tag/v0.1.0) and see [`packages/desktop-macos/README.md`](packages/desktop-macos/README.md) for installation and local packaging instructions.
+- **Download:** Get `LocalHostAgentSDK-macos-arm64.zip` from the [v0.1.0 release assets](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0) and see [`packages/desktop-macos/README.md`](packages/desktop-macos/README.md) for installation and local packaging instructions. The app in that archive is **LocalHostAgent SDK.app**. Builds from this repository produce `use-my-llm.app`.
 - **Verification note:** The release archive is Developer ID signed, notarized by Apple, and checked with Gatekeeper on the build Mac, but a downloaded first launch on a separate clean Mac has not yet been verified.
 
 ---
@@ -188,11 +188,11 @@ node packages/bridge/dist/cli.mjs --enable-claude-api
 Runs an isolated Python worker using `google-antigravity==0.1.23` and a Gemini Developer API key. It **does not** reuse the Antigravity desktop app's login or existing conversations, and usage may be billed by Google. This mode is currently restricted to POSIX platforms (macOS/Linux) because process-group cancellation on Windows has not been verified.
 
 ```sh
-python3 -m venv ~/.venvs/localhostagent-google
-~/.venvs/localhostagent-google/bin/pip install "google-antigravity==0.1.23"
+python3 -m venv ~/.venvs/use-my-llm-google
+~/.venvs/use-my-llm-google/bin/pip install "google-antigravity==0.1.23"
 
 export GEMINI_API_KEY="your-gemini-api-key"
-export LOCALHOSTAGENT_GOOGLE_PYTHON="$HOME/.venvs/localhostagent-google/bin/python3"
+export LOCALHOSTAGENT_GOOGLE_PYTHON="$HOME/.venvs/use-my-llm-google/bin/python3"
 
 node packages/bridge/dist/cli.mjs --enable-antigravity-api
 ```

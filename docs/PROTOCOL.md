@@ -1,4 +1,4 @@
-# LocalHostAgent SDK: browser-to-local bridge contract (v1)
+# use-my-llm: browser-to-local bridge contract (v1)
 
 This is the implementation contract for the initial developer preview. The bridge is a separately installed local process. It must never expose an arbitrary command runner, accept executable paths or configuration from a website, read provider credentials into JavaScript, or claim to resume a desktop app's existing chats.
 

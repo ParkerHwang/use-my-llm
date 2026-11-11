@@ -274,7 +274,7 @@ export async function runGoogleSdk(
 
   let root: string | undefined;
   try {
-    root = await mkdtemp(join(cwd ?? tmpdir(), 'localhostagent-google-'));
+    root = await mkdtemp(join(cwd ?? tmpdir(), 'use-my-llm-google-'));
     const home = join(root, 'home');
     const workspace = join(root, 'workspace');
     const data = join(root, 'data');

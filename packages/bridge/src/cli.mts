@@ -2,7 +2,7 @@
 import { createBridge } from './server.mjs';
 import { createProviderRegistry } from './providers/index.mjs';
 
-const help = `LocalHostAgent SDK local bridge\n\nUsage: localhost-agent [--port PORT] [--allow-origin ORIGIN ...] [--enable-claude-api] [--enable-antigravity-api]\n\nRun this on the same computer as the browser. Websites must be approved locally.\nOnly local configuration selects providers; websites cannot choose executables or paths.\nClaude API mode requires Anthropic API credentials and may incur API charges.\nAntigravity API mode requires the official Python SDK and a Gemini API key.\nConsumer subscription reuse through third-party websites is not enabled.\n`;
+const help = `use-my-llm local bridge\n\nUsage: use-my-llm [--port PORT] [--allow-origin ORIGIN ...] [--enable-claude-api] [--enable-antigravity-api]\n\nRun this on the same computer as the browser. Websites must be approved locally.\nOnly local configuration selects providers; websites cannot choose executables or paths.\nClaude API mode requires Anthropic API credentials and may incur API charges.\nAntigravity API mode requires the official Python SDK and a Gemini API key.\nConsumer subscription reuse through third-party websites is not enabled.\nlocalhost-agent is the same command.\n`;
 interface CliConfig {
   port: number;
   allowedOrigins?: string[];

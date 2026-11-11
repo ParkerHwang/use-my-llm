@@ -260,7 +260,7 @@ export async function runClaude({
   let temporary: string | undefined;
   if (cwd === undefined) {
     try {
-      temporary = await mkdtemp(join(tmpdir(), 'localhostagent-claude-'));
+      temporary = await mkdtemp(join(tmpdir(), 'use-my-llm-claude-'));
     } catch {
       throw failure('PROVIDER_FAILED');
     }

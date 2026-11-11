@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createClient, DEFAULT_BRIDGE_URL, LocalHostAgentError, PROVIDERS } from '../dist/index.js';
+import { createClient, DEFAULT_BRIDGE_URL, UseMyLlmError, PROVIDERS } from '../dist/index.js';
 
 const ORIGIN = 'https://app.example';
 const PAGE = `${ORIGIN}/app?view=chat`;
@@ -181,7 +181,7 @@ function assertNoLeak(error, ...secrets) {
 
 async function rejectsWithCode(promise, code, check) {
   await assert.rejects(promise, (error) => {
-    assert.ok(error instanceof LocalHostAgentError, `expected LocalHostAgentError, got ${error}`);
+    assert.ok(error instanceof UseMyLlmError, `expected UseMyLlmError, got ${error}`);
     assert.equal(error.code, code);
     assertNoLeak(error, TOKEN, TOKEN_B, ATTACKER_TOKEN);
     check?.(error);
@@ -237,7 +237,7 @@ test('rejects any bridgeUrl that is not exactly http://127.0.0.1:<port>', () => 
   for (const bridgeUrl of rejected) {
     assert.throws(
       () => createClient({ bridgeUrl, fetch: () => (fetched += 1) }),
-      (error) => error instanceof LocalHostAgentError && error.code === 'invalid_bridge_url',
+      (error) => error instanceof UseMyLlmError && error.code === 'invalid_bridge_url',
       `expected ${String(bridgeUrl)} to be rejected`,
     );
   }

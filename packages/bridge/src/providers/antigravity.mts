@@ -237,7 +237,7 @@ export async function runAntigravityAcp(
     const init = await request("initialize", {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      clientInfo: { name: "localhost-agent-sdk", version: "0.1.0" },
+      clientInfo: { name: "use-my-llm", version: "0.1.0" },
     });
     if (!isRecord(init) || init.protocolVersion !== 1) throw providerError("PROVIDER_FAILED");
     const session = await request("session/new", { cwd, mcpServers: [] });

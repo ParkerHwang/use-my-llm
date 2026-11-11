@@ -1,8 +1,8 @@
 {
-  "name": "@localhost-agent-sdk/browser",
+  "name": "@use-my-llm/browser",
   "version": "0.1.0",
   "license": "MIT",
-  "description": "Dependency-free browser client for the LocalHostAgent local bridge (protocol v1).",
+  "description": "Dependency-free browser client for the use-my-llm local bridge (protocol v1).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

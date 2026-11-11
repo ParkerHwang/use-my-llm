@@ -267,7 +267,7 @@ export async function runCodex({ message, history = [], signal, executable, cwd 
   try {
     const workspaceParent = cwd ?? tmpdir();
     if (!isAbsolute(workspaceParent)) throw new Error('Expected an absolute temporary directory');
-    workspace = await mkdtemp(join(workspaceParent, 'localhostagent-codex-'));
+    workspace = await mkdtemp(join(workspaceParent, 'use-my-llm-codex-'));
   } catch {
     throw failure('CODEX_WORKSPACE_FAILED', 'Could not prepare an isolated Codex working directory.', 503);
   }

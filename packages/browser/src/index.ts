@@ -1,5 +1,5 @@
 /**
- * LocalHostAgent SDK: browser client for the local bridge (protocol v1).
+ * use-my-llm: browser client for the local bridge (protocol v1).
  *
  * Dependency-free ESM. See docs/PROTOCOL.md for the contract this implements.
  *
@@ -124,7 +124,7 @@ export interface DisconnectResult {
   disconnected: true;
 }
 
-export interface LocalHostAgentClient {
+export interface UseMyLlmClient {
   /**
    * Starts pairing by navigating this tab to the bridge's local approval page.
    * The page unloads on success; the promise rejects if pairing cannot start
@@ -207,8 +207,8 @@ const ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 /**
  * Client errors have fixed messages or sanitized messages from the local bridge.
  */
-export class LocalHostAgentError extends Error {
-  override readonly name: 'LocalHostAgentError';
+export class UseMyLlmError extends Error {
+  override readonly name: 'UseMyLlmError';
   /** A {@link ClientErrorCode}, or the `error.code` returned by the bridge. */
   readonly code: ClientErrorCode | (string & {});
   /** HTTP status, present only when the bridge answered with a non-2xx response. */
@@ -216,14 +216,14 @@ export class LocalHostAgentError extends Error {
 
   constructor(code: string, message: string, status?: number) {
     super(message);
-    this.name = 'LocalHostAgentError';
+    this.name = 'UseMyLlmError';
     this.code = code;
     if (status !== undefined) this.status = status;
   }
 }
 
-function fail(code: string, message: string, status?: number): LocalHostAgentError {
-  return new LocalHostAgentError(code, message, status);
+function fail(code: string, message: string, status?: number): UseMyLlmError {
+  return new UseMyLlmError(code, message, status);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -349,13 +349,13 @@ function validateChatInput(input: ChatOptions): { provider: ProviderId; body: st
   return { provider, body, signal: signal ?? null };
 }
 
-function cancelError(reason: CancelReason): LocalHostAgentError {
+function cancelError(reason: CancelReason): UseMyLlmError {
   return reason === 'disconnected'
     ? fail('disconnected', 'The chat request was cancelled because this session was disconnected.')
     : fail('aborted', 'The chat request was aborted.');
 }
 
-export function createClient(options: ClientOptions = {}): LocalHostAgentClient {
+export function createClient(options: ClientOptions = {}): UseMyLlmClient {
   if (!isRecord(options)) throw fail('invalid_options', 'createClient() options must be an object.');
   if (options.fetch !== undefined && typeof options.fetch !== 'function') {
     throw fail('invalid_options', 'options.fetch must be a function.');
@@ -726,7 +726,7 @@ export function createClient(options: ClientOptions = {}): LocalHostAgentClient 
       payload = await request('POST', '/v1/disconnect', { token, body: '{}' });
     } catch (error) {
       // The bridge already considers this token invalid: nothing left to revoke.
-      if (error instanceof LocalHostAgentError && error.status === 401) return { disconnected: true };
+      if (error instanceof UseMyLlmError && error.status === 401) return { disconnected: true };
       throw error;
     }
     if (payload.disconnected !== true) {
