@@ -16,9 +16,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { share } from '../dist/context/service.mjs';
 import { listSources } from '../dist/context/sources/index.mjs';
+import { claudeSubscriptionConnected, claudeSubscriptionDirectory } from '../dist/claude-auth.mjs';
+import { defaultLocations } from '../dist/context/sources/index.mjs';
 import { createContextStore } from '../dist/context/store.mjs';
 import { agyAcpAvailable, findAgy } from '../dist/providers/antigravity.mjs';
-import { findClaude, forkClaude } from '../dist/providers/claude.mjs';
+import { findClaude, forkClaude, claudePrintArgs } from '../dist/providers/claude.mjs';
 import { findCodex, forkCodex, runCodex } from '../dist/providers/codex.mjs';
 import { allFixtures, IDS } from '../test-support/fixtures.mjs';
 
@@ -107,8 +109,9 @@ test('real Claude Code CLI: the bridge-only copy is found by --resume --fork-ses
     const [{ fork }] = store.resolve(SITE, [meta.handle]);
     // A made-up key: Anthropic must refuse it. Reaching that refusal shows the copy was loaded
     // and that no stored subscription login was used instead.
-    const env = { PATH: process.env.PATH, HOME: join(root, 'home'), ANTHROPIC_API_KEY: 'fixture-key-that-anthropic-will-refuse' };
-    const args = ['--print', '--bare', '--output-format', 'json', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-session-persistence', '--resume', fork.sessionId, '--fork-session'];
+    const env = { PATH: process.env.PATH, HOME: homedir(), ANTHROPIC_API_KEY: 'fixture-key-that-anthropic-will-refuse', CLAUDE_CODE_DISABLE_ATTACHMENTS: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
+    const args = [...claudePrintArgs('api-key'), '--resume', fork.sessionId, '--fork-session'];
+    const before = claudeOriginalHash();
     let output;
     try {
       output = execFileSync(claude, args, { cwd: fork.cwd, env: { ...env, CLAUDE_CONFIG_DIR: fork.configDir }, input: 'Reply with the single word: ok', encoding: 'utf8', timeout: 120_000, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -122,6 +125,7 @@ test('real Claude Code CLI: the bridge-only copy is found by --resume --fork-ses
     const project = join(fork.configDir, 'projects');
     assert.equal(readdirSync(project, { recursive: true }).filter((name) => String(name).endsWith('.jsonl')).length, 1);
     assert.ok(dataDir);
+    assert.deepEqual(claudeOriginalHash(), before, 'original Claude files are unchanged');
   });
 
 test('real agy CLI: report whether this build has the acp subcommand',
@@ -129,4 +133,45 @@ test('real agy CLI: report whether this build has the acp subcommand',
     const available = agyAcpAvailable(agy);
     t.diagnostic(`agy acp available: ${available}`);
     if (!available) t.skip('this agy build has no "acp" subcommand, so ACP listing and continuation cannot be exercised here');
+  });
+
+/** Whole original Claude tree plus ~/.claude.json; never print names or file contents. */
+function claudeOriginalHash() {
+  const hash = createHash('sha256');
+  let count = 0;
+  const directory = join(homedir(), '.claude');
+  if (existsSync(directory)) {
+    const files = readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name)).sort();
+    for (const path of files) { hash.update(path).update(readFileSync(path)); count++; }
+  }
+  const config = join(homedir(), '.claude.json');
+  if (existsSync(config)) { hash.update(config).update(readFileSync(config)); count++; }
+  return { digest: hash.digest('hex'), count };
+}
+
+test('real Claude subscription: continues a real approved session copy and preserves original data',
+  { skip: !ENABLED ? off : !claude ? 'Claude Code is not installed' : process.env.USE_MY_LLM_REAL_CLAUDE_LOGIN !== '1'
+    ? 'needs bridge subscription sign-in and USE_MY_LLM_REAL_CLAUDE_LOGIN=1' : false, timeout: 240_000 }, async t => {
+    assert.equal(claudeSubscriptionConnected(process.env, claude), true, 'sign in with use-my-llm claude-auth connect first');
+    const before = claudeOriginalHash();
+    const root = mkdtempSync(join(tmpdir(), 'use-my-llm-real-session-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const locations = { ...defaultLocations(), claudeHome: join(homedir(), '.claude'), dataDir: root };
+    const store = createContextStore({ dataDir: root });
+    const sessions = listSources(locations, { apps: ['claude-code'] }).items.filter(item => item.kind === 'session');
+    let meta;
+    for (const item of sessions) {
+      try { meta = share({ origin: SITE, ref: item.ref, fork: true }, { locations, store }).meta; break; }
+      catch (error) { if (!['SELECTION_TOO_LARGE', 'NOT_FORKABLE'].includes(error.code)) throw error; }
+    }
+    assert.ok(meta, 'a readable real Claude session must exist');
+    const [{ fork }] = store.resolve(SITE, [meta.handle]);
+    const { reply } = await forkClaude({ fork, executable: claude, authMode: 'subscription',
+      subscriptionConfigDir: claudeSubscriptionDirectory(), message: 'Reply with exactly CLAUDE_COPY_OK and nothing else.' });
+    assert.match(reply, /CLAUDE_COPY_OK/);
+    assert.deepEqual(claudeOriginalHash(), before, 'all original Claude files are byte-for-byte unchanged');
+    store.revokeOrigin(SITE);
+    assert.throws(() => store.resolve(SITE, [meta.handle]), { code: 'CONTEXT_DENIED' });
+    t.diagnostic('Real session copy returned a model reply; original Claude tree and config hashes unchanged.');
   });

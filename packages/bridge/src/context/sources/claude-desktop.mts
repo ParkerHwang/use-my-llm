@@ -13,7 +13,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import { redactDeep } from '../redact.mjs';
 import type { LoadedSource, SourceItem, SourceMessage } from '../types.mjs';
 import { openZip } from '../zip.mjs';
@@ -256,12 +256,16 @@ function embeddedMessages(value: unknown): SourceMessage[] {
 
 function transcriptFor(sessionPath: string, cliSessionId: string): string | null {
   // Some builds keep the Claude Code transcript in a directory beside the metadata file.
-  const root = sessionPath.replace(/\.json$/, '');
+  let root: string;
+  try { root = containedPath(sessionPath.replace(/\.json$/, ''), [dirname(sessionPath)]); }
+  catch { return null; }
   const visit = (directory: string, depth: number): string | null => {
     for (const entry of entries(directory)) {
       if (FORBIDDEN.test(entry.name)) continue;
       const path = join(directory, entry.name);
-      if (entry.isFile() && entry.name === `${cliSessionId}.jsonl`) return path;
+      if (entry.isFile() && entry.name === `${cliSessionId}.jsonl`) {
+        try { return containedPath(path, [root]); } catch { continue; }
+      }
       if (entry.isDirectory() && depth < 6) {
         const found = visit(path, depth + 1);
         if (found) return found;
@@ -381,6 +385,12 @@ export function listClaudeDesktop({ dataDir, claude3pDir, limit = 300 }: ClaudeD
   return items;
 }
 
+function localPath(requested: string, root: string): string {
+  const path = containedPath(requested, [root]);
+  if (relative(root, path).split(sep).some(part => FORBIDDEN.test(part))) throw new Error('Not a shareable local file.');
+  return path;
+}
+
 export function loadClaudeDesktop(ref: string, { dataDir, claude3pDir }: ClaudeDesktopSourceOptions): LoadedSource {
   const [, kind, ...rest] = ref.split(':');
   if (kind === 'import') {
@@ -408,7 +418,7 @@ export function loadClaudeDesktop(ref: string, { dataDir, claude3pDir }: ClaudeD
   }
   const requested = rest.join(':');
   if (kind === '3p-session') {
-    const path = containedPath(requested, [join(claude3pDir, 'local-agent-mode-sessions')]);
+    const path = localPath(requested, join(claude3pDir, 'local-agent-mode-sessions'));
     const session = SESSION_FILE.test(basename(path)) ? parseLocalSession(path) : null;
     if (!session) throw new Error('This session cannot be read.');
     const item: SourceItem = {
@@ -420,7 +430,7 @@ export function loadClaudeDesktop(ref: string, { dataDir, claude3pDir }: ClaudeD
     return session.messages.length ? { item, messages: session.messages } : { item, text: session.summary };
   }
   if (kind === '3p-memory') {
-    const path = containedPath(requested, [join(claude3pDir, 'memory')]);
+    const path = localPath(requested, join(claude3pDir, 'memory'));
     if (!/\.(?:md|txt)$/i.test(path) || FORBIDDEN.test(basename(path)) || FORBIDDEN.test(basename(dirname(path)))) {
       throw new Error('Not a memory file.');
     }

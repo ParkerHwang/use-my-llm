@@ -63,6 +63,8 @@ export interface ProviderReply {
 }
 
 export interface ProviderStatus {
+  /** Claude authentication selected locally; no credentials are returned. */
+  authMode?: 'subscription' | 'api-key';
   id: ProviderId;
   available: boolean;
   /** Continuation is offered even when ordinary inference is unavailable. */
@@ -430,6 +432,8 @@ export function createBridge({
     if (!Array.isArray(list)) throw new TypeError("getProviders must return an array.");
     return PROVIDERS.map((id) => ({
       id,
+      ...(id === 'claude' && ['subscription', 'api-key'].includes(list.find(item => item?.id === id)?.authMode ?? '')
+        && { authMode: list.find(item => item?.id === id)!.authMode }),
       available: list.some((item) => item?.id === id && item.available === true),
       ...(list.some((item) => item?.id === id && item.continuationAvailable === true) && { continuationAvailable: true as const }),
     }));

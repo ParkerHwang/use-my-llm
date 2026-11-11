@@ -1,7 +1,7 @@
 // Context injection and continued copies, against fake executables and a mock ACP agent.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -198,6 +198,64 @@ test('a Claude Code session is copied, redacted and continued from bridge-only s
   // Revoking removes the copy, after which there is nothing left to continue.
   store.revokeOrigin(SITE);
   await assert.rejects(forkClaude({ fork, executable: fake, env, message: 'What next?' }), { code: 'CONTEXT_UNAVAILABLE' });
+});
+
+test('subscription continuation stages a unique redacted seed per turn and leaves originals and grants untouched', { skip: WINDOWS }, async (t) => {
+  const { root, claude, store, item, grant } = setup(t);
+  const fake = executable(root, 'claude-subscription-fixture', `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    let input = '';
+    process.stdin.on('data', chunk => { input += chunk; });
+    process.stdin.on('end', () => {
+      const args = process.argv.slice(2);
+      const sessionId = args[args.indexOf('--resume') + 1];
+      const project = process.cwd().replace(/[^a-zA-Z0-9]/g, '-');
+      const seedPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', project, sessionId + '.jsonl');
+      const result = JSON.stringify({ args, input, seed: fs.readFileSync(seedPath, 'utf8'),
+        cwd: process.cwd(), configDir: process.env.CLAUDE_CONFIG_DIR,
+        keyPresent: Object.hasOwn(process.env, 'ANTHROPIC_API_KEY'),
+        oauthPresent: Object.hasOwn(process.env, 'CLAUDE_CODE_OAUTH_TOKEN') });
+      setTimeout(() => process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result })), 40);
+    });
+  `);
+  const before = treeHash(claude.home);
+  const meta = grant({ ref: item('claude-code', entry => entry.ref.endsWith(`${IDS.claude}.jsonl`)).ref, fork: true });
+  const [{ fork }] = store.resolve(SITE, [meta.handle]);
+  const grantBefore = treeHash(fork.configDir);
+  const subscriptionConfigDir = join(root, 'subscription-login');
+  mkdirSync(subscriptionConfigDir);
+  writeFileSync(join(subscriptionConfigDir, 'login-marker'), 'CLI-owned login state');
+  const options = { fork, executable: fake, message: 'Continue', authMode: 'subscription', subscriptionConfigDir,
+    env: { PATH: process.env.PATH, HOME: join(root, 'home'), ANTHROPIC_API_KEY: 'excluded', CLAUDE_CODE_OAUTH_TOKEN: 'excluded' } };
+  const replies = await Promise.all([forkClaude(options), forkClaude(options)]);
+  const observed = replies.map(result => JSON.parse(result.reply));
+  assert.notEqual(observed[0].cwd, observed[1].cwd);
+  const ids = observed.map(value => value.args[value.args.indexOf('--resume') + 1]);
+  assert.notEqual(ids[0], ids[1]);
+  for (let index = 0; index < observed.length; index++) {
+    const value = observed[index];
+    assert.notEqual(ids[index], fork.sessionId);
+    assert.equal(value.configDir, subscriptionConfigDir);
+    assert.equal(value.args.includes('--bare'), false);
+    assert.equal(value.args.includes('--safe-mode'), true);
+    assert.equal(value.args.includes('--fork-session'), true);
+    assert.equal(value.args.includes('--no-session-persistence'), true);
+    assert.equal(value.keyPresent, false);
+    assert.equal(value.oauthPresent, false);
+    assert.equal(value.seed.includes(SECRETS.github), false);
+    const records = value.seed.trim().split('\n').map(JSON.parse);
+    assert.ok(records.every(record => record.cwd === value.cwd && record.sessionId === ids[index]));
+    assert.equal(value.seed.includes(claude.project), false);
+    assert.equal(value.seed.includes(IDS.claude), false);
+    assert.equal(existsSync(value.cwd), false);
+  }
+  assert.equal(readdirSync(join(subscriptionConfigDir, 'projects')).length, 0);
+  assert.equal(readFileSync(join(subscriptionConfigDir, 'login-marker'), 'utf8'), 'CLI-owned login state');
+  assert.equal(treeHash(claude.home), before);
+  assert.equal(treeHash(fork.configDir), grantBefore);
+  store.revokeOrigin(SITE);
+  await assert.rejects(forkClaude(options), { code: 'CONTEXT_UNAVAILABLE' });
 });
 
 test('the Claude adapters carry shared context as quoted data', { skip: WINDOWS }, async (t) => {

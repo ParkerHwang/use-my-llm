@@ -24,7 +24,8 @@ struct BridgeCommand: Sendable {
             "TMPDIR": files.temporaryDirectory.path
         ]
         let local = ProcessInfo.processInfo.environment
-        for key in ["LOCALHOSTAGENT_DATA_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
+        for key in ["LOCALHOSTAGENT_DATA_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY",
+                    "LOCALHOSTAGENT_CLAUDE_MODEL", "LOCALHOSTAGENT_CLAUDE_WORKSPACE_ID"] {
             environment[key] = local[key]
         }
         self.environment = environment
@@ -58,9 +59,56 @@ struct BridgeCommand: Sendable {
         }.value
     }
 
+    /// Local auth management only; never exposed through the website protocol.
+    func claudeAuth(_ arguments: [String]) async throws -> ClaudeAuthStatus {
+        try await Task.detached {
+            let child = process(arguments: ["claude-auth"] + arguments)
+            let output = Pipe()
+            child.standardOutput = output
+            try child.run()
+            var data = Data()
+            while let chunk = try output.fileHandleForReading.read(upToCount: 4_096), !chunk.isEmpty {
+                guard data.count + chunk.count <= 16_384 else {
+                    child.terminate()
+                    throw PickerError(message: "The Claude sign-in command returned an invalid response.")
+                }
+                data.append(chunk)
+            }
+            child.waitUntilExit()
+            guard child.terminationStatus == 0 else {
+                throw PickerError(message: "Claude sign-in could not be updated. Check the official Claude Code CLI and try again.")
+            }
+            return try JSONDecoder().decode(ClaudeAuthStatus.self, from: data)
+        }.value
+    }
+
+    /// Only non-secret local paths enter the shell command shown in Terminal.
+    func connectClaudeInTerminal() throws {
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let keys = ["HOME", "PATH", "TMPDIR", "LOCALHOSTAGENT_DATA_DIR"]
+        let assignments = keys.compactMap { key in environment[key].map { quote(key + "=" + $0) } }
+        let command = (["/usr/bin/env", "-i"] + assignments + [quote(node.path), quote(entry.path), "claude-auth", "connect"]).joined(separator: " ")
+        let script = Process()
+        script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        script.arguments = ["-e", "on run argv\n tell application \"Terminal\"\n activate\n do script (item 1 of argv)\n end tell\nend run", command]
+        script.standardOutput = FileHandle.nullDevice
+        script.standardError = FileHandle.nullDevice
+        try script.run()
+        script.waitUntilExit()
+        guard script.terminationStatus == 0 else {
+            throw PickerError(message: "Could not open Terminal for Claude sign-in.")
+        }
+    }
+
     private struct CommandFailure: Decodable {
         let error: PickerError
     }
+}
+
+struct ClaudeAuthStatus: Decodable, Sendable {
+    let mode: String?
+    let connected: Bool
+    let cliAvailable: Bool
 }
 
 private struct PickerError: LocalizedError, Decodable {
@@ -299,7 +347,7 @@ struct ContextPicker: View {
             Text(review.plan.label)
             if review.plan.kind == "fork" {
                 Text("This website can ask \(review.plan.provider ?? "the provider") to continue the conversation.")
-                if review.plan.provider == "claude" { Text("Claude continuation requires a locally configured Anthropic API key.") }
+                if review.plan.provider == "claude" { Text("Claude continuation uses the subscription or API-key mode selected locally. Subscription usage counts against your Claude plan limits.") }
                 if review.plan.provider == "antigravity" { Text("Experimental ACP can run Antigravity’s tools and may retain the new session.") }
             }
             if !review.plan.text.isEmpty {

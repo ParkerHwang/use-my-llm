@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import SwiftUI
 
-final class BridgeApp: NSObject, NSApplicationDelegate {
+final class BridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State {
         case starting, running
         case stopped(String)
@@ -17,6 +17,13 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let statusLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let startItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let claudeLabel = NSMenuItem(title: "Claude: checking…", action: nil, keyEquivalent: "")
+    private let claudeConnectItem = NSMenuItem(title: "Connect Claude Subscription…", action: nil, keyEquivalent: "")
+    private let claudeDisconnectItem = NSMenuItem(title: "Disconnect Claude Subscription", action: nil, keyEquivalent: "")
+    private let claudeApiItem = NSMenuItem(title: "Use Claude API Key", action: nil, keyEquivalent: "")
+    private let claudeOffItem = NSMenuItem(title: "Turn Claude Off", action: nil, keyEquivalent: "")
+    private var claudeBusy = false
+    private var claudeStatus: ClaudeAuthStatus?
     private var child: Process?
     private var outputPipe: Pipe?
     private var startupOutput = Data()
@@ -37,6 +44,7 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenu()
         installOrStart()
+        refreshClaudeStatus()
     }
 
     private func configureMenu() {
@@ -45,6 +53,7 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
         statusLabel.isEnabled = false
         menu.addItem(statusLabel)
         menu.addItem(.separator())
@@ -52,6 +61,19 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         startItem.target = self
         startItem.action = #selector(startBridge)
         menu.addItem(startItem)
+        menu.addItem(.separator())
+        claudeLabel.isEnabled = false
+        menu.addItem(claudeLabel)
+        for (entry, action) in [
+            (claudeConnectItem, #selector(connectClaude)),
+            (claudeDisconnectItem, #selector(disconnectClaude)),
+            (claudeApiItem, #selector(useClaudeApi)),
+            (claudeOffItem, #selector(turnClaudeOff))
+        ] {
+            entry.target = self
+            entry.action = action
+            menu.addItem(entry)
+        }
         menu.addItem(.separator())
         let contextItem = NSMenuItem(title: "Shared Context…", action: #selector(showSharedContext), keyEquivalent: "")
         contextItem.target = self
@@ -80,6 +102,66 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         statusItem?.button?.title = title
         statusItem?.button?.toolTip = statusLabel.title
         startItem.isEnabled = !isInstalling && !isQuitting && child == nil
+        claudeConnectItem.isEnabled = !claudeBusy && !isQuitting
+        claudeDisconnectItem.isEnabled = !claudeBusy && !isQuitting && claudeStatus?.cliAvailable == true
+        claudeApiItem.isEnabled = !claudeBusy && !isQuitting
+        claudeOffItem.isEnabled = !claudeBusy && !isQuitting
+        claudeApiItem.state = claudeStatus?.mode == "api-key" ? .on : .off
+        claudeOffItem.state = claudeStatus?.mode == nil ? .on : .off
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { refreshClaudeStatus() }
+
+    private func refreshClaudeStatus() {
+        guard !claudeBusy, !isQuitting, let command = BridgeCommand() else { return }
+        claudeBusy = true
+        updateMenu()
+        Task { @MainActor in
+            defer { claudeBusy = false; updateMenu() }
+            do { showClaudeStatus(try await command.claudeAuth(["status"])) }
+            catch { claudeLabel.title = "Claude: status unavailable" }
+        }
+    }
+
+    private func showClaudeStatus(_ value: ClaudeAuthStatus) {
+        claudeStatus = value
+        switch value.mode {
+        case "subscription":
+            claudeLabel.title = value.connected ? "Claude: Subscription connected" : "Claude: Subscription sign-in required"
+        case "api-key": claudeLabel.title = "Claude: API key mode"
+        default: claudeLabel.title = "Claude: Off"
+        }
+        if !value.cliAvailable && value.mode == "subscription" { claudeLabel.title = "Claude: CLI not installed" }
+    }
+
+    @objc private func connectClaude() {
+        guard !claudeBusy, let command = BridgeCommand() else { return }
+        do {
+            try command.connectClaudeInTerminal()
+            claudeLabel.title = "Claude: finish sign-in in Terminal"
+        } catch { showClaudeError(error) }
+    }
+
+    @objc private func disconnectClaude() { updateClaudeAuth(["disconnect"]) }
+    @objc private func useClaudeApi() { updateClaudeAuth(["mode", "api-key"]) }
+    @objc private func turnClaudeOff() { updateClaudeAuth(["mode", "off"]) }
+
+    private func updateClaudeAuth(_ arguments: [String]) {
+        guard !claudeBusy, !isQuitting, let command = BridgeCommand() else { return }
+        claudeBusy = true
+        updateMenu()
+        Task { @MainActor in
+            defer { claudeBusy = false; updateMenu() }
+            do { showClaudeStatus(try await command.claudeAuth(arguments)) }
+            catch { showClaudeError(error) }
+        }
+    }
+
+    private func showClaudeError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Claude connection could not be updated"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     private func installOrStart() {

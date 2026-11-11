@@ -77,6 +77,8 @@ export type PairingResult =
   | { paired: false; reason: 'no_callback' };
 
 export interface ProviderStatus {
+  /** Claude authentication selected locally; no credentials are returned. */
+  authMode?: 'subscription' | 'api-key';
   id: ProviderId;
   available: boolean;
   /** The bridge supports a locally enabled continuation-only route. */
@@ -734,6 +736,7 @@ export function createClient(options: ClientOptions = {}): UseMyLlmClient {
       if (isRecord(entry) && isProvider(entry.id) && typeof entry.available === 'boolean') {
         providers.push({
           id: entry.id, available: entry.available,
+          ...(entry.id === 'claude' && (entry.authMode === 'subscription' || entry.authMode === 'api-key') && { authMode: entry.authMode }),
           ...(entry.continuationAvailable === true && { continuationAvailable: true as const }),
         });
       }

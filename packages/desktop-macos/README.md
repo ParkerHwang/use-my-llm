@@ -14,7 +14,15 @@ To update an existing app, quit it and replace your copy in Applications with th
 
 In a build with protocol v1.1, open **Shared Context…** from the menu bar. Select an app, project and item. For conversations, choose a range of messages or the whole text copy when available. Enter the website origin and use **Review Sharing…** to inspect the redacted text and approve the share. **Manage Sharing…** lists each website and revokes its snapshots and local copies. **Import Export ZIP…** adds an official Claude Desktop export to the local picker.
 
-The menu-bar bridge starts with default provider settings. Start the bridge from a terminal for optional provider modes. The two use the same context store by default. See [Security](../../SECURITY.md) for the sharing and provider boundaries.
+## Claude sign-in
+
+Choose **Connect Claude Subscription…** from the menu bar. Terminal opens the official Claude Code sign-in flow; complete the subscription OAuth sign-in in the browser. Reopen the menu to refresh the connection indicator. The app’s bridge and the terminal CLI use the same private data directory by default. The official Claude Code CLI must be installed separately.
+
+The menu shows **Claude: Subscription connected**, a sign-in requirement, **API key mode**, or **Off**. **Use Claude API Key** switches the persisted local mode; supply `ANTHROPIC_API_KEY` in the app process environment when launching it for that mode. The app does not collect API keys in a dialog or place them in a Terminal command. **Disconnect Claude Subscription** logs out only the bridge-owned Claude login and disables Claude. **Turn Claude Off** disables the provider without logging out. Changes apply to subsequent bridge requests; no restart is needed.
+
+Subscription usage counts against your Claude plan limits. Sign-in does not share existing sessions or memory. Use **Shared Context…** to choose and approve redacted snapshots for each exact website. Conversation continuation uses a copy in bridge-owned storage. Memory, instructions and project context require their own selection. Existing Claude files and the original project stay untouched; revoking sharing and disconnecting a provider are separate actions.
+
+Start the bridge from a terminal for the optional Antigravity provider modes. The app and CLI use the same context store by default. See [Security](../../SECURITY.md) for the sharing and provider boundaries.
 
 ## Build a local preview
 

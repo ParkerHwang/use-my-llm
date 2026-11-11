@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -49,7 +49,9 @@ testPosix('passes a conversation through stdin using fixed restricted flags and 
   const observed = JSON.parse(response.reply);
   assert.deepEqual(observed.args, [
     '--print', '--bare', '--input-format', 'text', '--output-format', 'json',
-    '--restricted', '--safe-mode', '--tools', '', '--disallowedTools', '*',
+    '--restricted', '--disable-slash-commands',
+    '--settings', '{"disableAllHooks":true,"autoMemoryEnabled":false}',
+    '--tools', '', '--disallowedTools', '*',
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--permission-prompts', 'none', '--no-chrome', '--no-session-persistence',
   ]);
@@ -162,4 +164,41 @@ test('checks key configuration without retrieving its value', () => {
     },
   };
   assert.equal(claudeApiKeyConfigured(env), true);
+});
+
+
+testPosix('subscription uses the CLI login in its fixed config dir and excludes all injected credentials', async t => {
+  const { directory, executable } = await fakeClaude(t, `
+    for await (const chunk of process.stdin) {}
+    const excluded = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR_INJECT', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK'];
+    const result = JSON.stringify({ args: process.argv.slice(2), configDir: process.env.CLAUDE_CONFIG_DIR,
+      excluded: excluded.filter(key => Object.hasOwn(process.env, key)),
+      attachments: process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS });
+    console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result }));
+  `);
+  const subscriptionConfigDir = join(directory, 'bridge-subscription');
+  await mkdir(subscriptionConfigDir);
+  const result = await runClaude({ executable, message: 'Hello', authMode: 'subscription', subscriptionConfigDir,
+    env: { ...TEST_ENV, CLAUDE_CONFIG_DIR: join(directory, 'original'),
+      ANTHROPIC_AUTH_TOKEN: 'do-not-use', CLAUDE_CODE_OAUTH_TOKEN: 'do-not-use',
+      ANTHROPIC_BASE_URL: 'https://do-not-use.invalid', CLAUDE_CODE_USE_BEDROCK: '1' } });
+  const observed = JSON.parse(result.reply);
+  assert.equal(observed.configDir, subscriptionConfigDir);
+  assert.equal(observed.args.includes('--bare'), false);
+  assert.equal(observed.args.includes('--safe-mode'), true);
+  assert.equal(observed.args.includes('--restricted'), true);
+  assert.deepEqual(observed.excluded, []);
+  assert.equal(observed.attachments, '1');
+});
+
+testPosix('subscription fails closed without an existing absolute bridge login directory', async t => {
+  const { executable } = await fakeClaude(t, `throw new Error('must not run');`);
+  for (const subscriptionConfigDir of [undefined, 'relative', join(tmpdir(), 'missing-use-my-llm-subscription')]) {
+    await assert.rejects(runClaude({ executable, message: 'Hello', authMode: 'subscription', subscriptionConfigDir, env: TEST_ENV }), {
+      code: 'PROVIDER_UNAVAILABLE',
+    });
+  }
+  await assert.rejects(runClaude({ executable, message: 'Hello', authMode: 'unexpected', env: TEST_ENV }), {
+    code: 'INVALID_REQUEST',
+  });
 });

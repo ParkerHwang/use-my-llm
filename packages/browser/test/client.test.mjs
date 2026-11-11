@@ -509,8 +509,8 @@ test('status() reports providers for a paired tab and ignores malformed provider
       version: 1,
       connected: true,
       providers: [
-        { id: 'codex', available: true },
-        { id: 'claude', available: false },
+        { id: 'codex', available: true, authMode: 'subscription' },
+        { id: 'claude', available: false, authMode: 'subscription' },
         { id: 'shell', available: true },
         { id: 'antigravity', available: 'yes' },
         null,
@@ -524,7 +524,7 @@ test('status() reports providers for a paired tab and ignores malformed provider
     connected: true,
     providers: [
       { id: 'codex', available: true },
-      { id: 'claude', available: false },
+      { id: 'claude', available: false, authMode: 'subscription' },
     ],
   });
 });

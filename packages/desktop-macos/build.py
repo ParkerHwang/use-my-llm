@@ -78,7 +78,7 @@ def include_bridge(resources: Path) -> None:
 
     # Copy only the known runtime files, never source, maps, declarations, or local data.
     runtime_files = (
-        "cli.mjs", "server.mjs", "providers/index.mjs", "providers/codex.mjs",
+        "cli.mjs", "server.mjs", "claude-auth.mjs", "providers/index.mjs", "providers/codex.mjs",
         "providers/claude.mjs", "providers/claude-api.mjs", "providers/antigravity.mjs",
         "providers/google-sdk.mjs", "providers/google_sdk.py", "providers/prompt.mjs",
         "context/cli.mjs", "context/fork.mjs", "context/redact.mjs", "context/service.mjs",

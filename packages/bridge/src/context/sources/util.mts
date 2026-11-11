@@ -99,6 +99,23 @@ export function readHead(path: string, bytes = HEAD_BYTES): string | null {
   }
 }
 
+/** Read a bounded tail for recent artifact references in long session logs. */
+export function readTail(path: string, bytes = HEAD_BYTES): string | null {
+  let descriptor: number | undefined;
+  try {
+    const size = fileSize(path);
+    if (size === null || size > MAX_SOURCE_BYTES) return null;
+    descriptor = openSync(path, 'r');
+    const buffer = Buffer.allocUnsafe(Math.min(bytes, size));
+    const offset = Math.max(0, size - bytes);
+    const count = readSync(descriptor, buffer, 0, buffer.length, offset);
+    const body = buffer.subarray(0, count).toString('utf8');
+    // A partial first record must never be interpreted as a complete record.
+    return offset ? body.slice(body.indexOf('\n') + 1) : body;
+  } catch { return null; }
+  finally { if (descriptor !== undefined) closeSync(descriptor); }
+}
+
 /** Parse JSON Lines. Unparseable lines (including a truncated final line) are skipped. */
 export function jsonLines(raw: string): unknown[] {
   const values: unknown[] = [];
