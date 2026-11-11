@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { promptData, validContext, type ContextEntry } from './prompt.mjs';
 
 const SDK_VERSION = '0.1.23';
 const SCRIPT = fileURLToPath(new URL('./google_sdk.py', import.meta.url));
@@ -33,6 +34,8 @@ type WorkerEnvironment = NodeJS.ProcessEnv & { GEMINI_API_KEY: string };
 export interface GoogleSdkOptions {
   message: string;
   history?: readonly { role: 'user' | 'assistant'; content: string }[];
+  /** User-approved snapshot text resolved by the bridge. */
+  context?: readonly ContextEntry[];
   signal?: AbortSignal;
   executable?: string | null;
   cwd?: string;
@@ -118,9 +121,10 @@ function isProviderErrorCode(value: unknown): value is ProviderErrorCode {
   return typeof value === 'string' && Object.hasOwn(ERRORS, value);
 }
 
-function formatInput(message: unknown, history: unknown): string {
+function formatInput(message: unknown, history: unknown, context?: unknown): string {
+  const entries = validContext(context);
   if (typeof message !== 'string' || !message.trim() || message.length > 12_000 ||
-      !Array.isArray(history) || history.length > 24) {
+      !Array.isArray(history) || history.length > 24 || !entries) {
     throw failure('INVALID_REQUEST');
   }
   const transcript = history.map((item: unknown) => {
@@ -134,7 +138,8 @@ function formatInput(message: unknown, history: unknown): string {
   if (Buffer.byteLength(input) > MAX_INPUT_BYTES || JSON.stringify(transcript).length > 40_000) {
     throw failure('INVALID_REQUEST');
   }
-  return input;
+  // The size limit above covers what the website wrote; approved context has its own limit.
+  return entries.length ? promptData(entries, transcript, message) : input;
 }
 
 function readReply(output: readonly Buffer[], apiKey: string): string {
@@ -257,11 +262,11 @@ function execute(
 export async function runGoogleSdk(
   options: GoogleSdkOptions,
 ): Promise<{ provider: 'antigravity'; reply: string }> {
-  const { message, history = [], signal, executable = findGooglePython(), cwd, env = process.env }:
+  const { message, history = [], context, signal, executable = findGooglePython(), cwd, env = process.env }:
     Partial<GoogleSdkOptions> = options === undefined ? {} : options;
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure('INVALID_REQUEST');
   if (signal?.aborted) throw failure('PROVIDER_ABORTED');
-  const input = formatInput(message, history);
+  const input = formatInput(message, history, context);
   if (!isExecutable(executable) || !googleApiConfigured(env)) throw failure('PROVIDER_UNAVAILABLE');
   if (cwd !== undefined && (typeof cwd !== 'string' || !isAbsolute(cwd))) {
     throw failure('INVALID_REQUEST');

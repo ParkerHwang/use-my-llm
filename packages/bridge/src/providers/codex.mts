@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
+import type { ForkRecord } from '../context/types.mjs';
+import { CONTEXT_NOTICE, promptData, validContext, type ContextEntry } from './prompt.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
@@ -18,6 +20,8 @@ interface HistoryTurn {
 export interface CodexOptions {
   message?: string;
   history?: readonly HistoryTurn[];
+  /** User-approved snapshot text resolved by the bridge. */
+  context?: readonly ContextEntry[];
   signal?: AbortSignal;
   /** Trusted local configuration only. */
   executable?: string | null;
@@ -241,8 +245,87 @@ function execute(executable: string, args: string[], cwd: string, prompt: string
   });
 }
 
+// Restrictions shared by a fresh turn and a continued copy.
+const RESTRICTED_CONFIG = [
+  '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
+  '-c', 'project_doc_max_bytes=0', '-c', 'features.skip_host_skill_discovery=true',
+  '-c', 'mcp_servers={}', '-c', 'shell_environment_policy.inherit="none"',
+  ...DISABLED_FEATURES.flatMap(feature => ['--disable', feature]),
+];
+const INSTRUCTIONS = 'You are a conversational assistant. Respond directly in the user’s language. ' +
+  'Use text only. Do not use tools, access files, run commands, browse, or request permissions. ';
+
+async function inWorkspace<Result>(cwd: string | undefined, run: (workspace: string) => Promise<Result>): Promise<Result> {
+  let workspace: string;
+  try {
+    const workspaceParent = cwd ?? tmpdir();
+    if (!isAbsolute(workspaceParent)) throw new Error('Expected an absolute temporary directory');
+    workspace = await mkdtemp(join(workspaceParent, 'use-my-llm-codex-'));
+  } catch {
+    throw failure('CODEX_WORKSPACE_FAILED', 'Could not prepare an isolated Codex working directory.', 503);
+  }
+  try {
+    return await run(workspace);
+  } finally {
+    await rm(workspace, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export interface CodexForkOptions {
+  /** Private details recorded when the user shared the session. */
+  fork?: Extract<ForkRecord, { provider: 'codex' }>;
+  message?: string;
+  context?: readonly ContextEntry[];
+  signal?: AbortSignal;
+  /** Trusted local configuration only. */
+  executable?: string | null;
+  /** Trusted local temporary directory parent. */
+  cwd?: string;
+}
+
+/**
+ * Continue a user-shared Codex session as an ephemeral copy.
+ *
+ * `codex exec fork --ephemeral` loads the session by id and persists nothing,
+ * so the user's rollout files are not written. The original is not opened by
+ * the bridge; only its size and modification time are compared with what was
+ * recorded at approval, so text added later is never handed to the website.
+ */
+export async function forkCodex({ fork, message, context, signal, executable, cwd }: CodexForkOptions = {}): Promise<CodexReply> {
+  if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
+  const entries = validContext(context);
+  if (typeof message !== 'string' || !message.trim() || message.length > 12_000 || !entries) {
+    throw failure('INVALID_MESSAGE', 'The message or context is invalid.', 400);
+  }
+  if (fork?.provider !== 'codex' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(fork.sessionId)) {
+    throw failure('CONTEXT_UNAVAILABLE', 'This shared conversation cannot be continued.', 503);
+  }
+  try {
+    const stats = statSync(fork.path);
+    if (stats.size !== fork.size || stats.mtimeMs !== fork.mtimeMs) throw new Error('changed');
+  } catch {
+    throw failure('CONTEXT_STALE', 'The shared conversation changed after it was shared.', 409);
+  }
+  const command = executable ?? findCodex();
+  if (!isExecutable(command)) {
+    throw failure('CODEX_NOT_FOUND', 'Install the official Codex CLI and try again.', 503);
+  }
+  return inWorkspace(cwd, workspace => {
+    if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
+    const args = [
+      'exec', 'fork', fork.sessionId, '--ignore-user-config', '--ignore-rules', '--strict-config',
+      '--skip-git-repo-check', '--ephemeral', '--json', '-c', 'sandbox_mode="read-only"',
+      ...RESTRICTED_CONFIG, '-',
+    ];
+    const prompt = INSTRUCTIONS + 'Continue this conversation as a text-only copy. ' +
+      (entries.length ? `${CONTEXT_NOTICE} ` : '') +
+      'The current user message follows as JSON data.\n\n' + promptData(entries, undefined, message);
+    return execute(command, args, workspace, prompt, signal);
+  });
+}
+
 /** Run one text turn. executable and cwd are trusted local configuration only. */
-export async function runCodex({ message, history = [], signal, executable, cwd }: CodexOptions = {}): Promise<CodexReply> {
+export async function runCodex({ message, history = [], context, signal, executable, cwd }: CodexOptions = {}): Promise<CodexReply> {
   if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
   if (signal !== undefined && (typeof signal?.addEventListener !== 'function' ||
       typeof signal?.removeEventListener !== 'function')) {
@@ -259,36 +342,24 @@ export async function runCodex({ message, history = [], signal, executable, cwd 
     throw failure('INVALID_MESSAGE', 'The conversation history is too long.', 400);
   }
 
+  const entries = validContext(context);
+  if (!entries) throw failure('INVALID_MESSAGE', 'The shared context is invalid.', 400);
+
   const command = executable ?? findCodex();
   if (!isExecutable(command)) {
     throw failure('CODEX_NOT_FOUND', 'Install the official Codex CLI and try again.', 503);
   }
-  let workspace: string;
-  try {
-    const workspaceParent = cwd ?? tmpdir();
-    if (!isAbsolute(workspaceParent)) throw new Error('Expected an absolute temporary directory');
-    workspace = await mkdtemp(join(workspaceParent, 'use-my-llm-codex-'));
-  } catch {
-    throw failure('CODEX_WORKSPACE_FAILED', 'Could not prepare an isolated Codex working directory.', 503);
-  }
-
-  try {
+  return inWorkspace(cwd, workspace => {
     if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
     const args = [
       'exec', '--ignore-user-config', '--ignore-rules', '--strict-config',
       '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only',
       '--cd', workspace, '--color', 'never', '--json',
-      '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
-      '-c', 'project_doc_max_bytes=0', '-c', 'features.skip_host_skill_discovery=true',
-      '-c', 'mcp_servers={}', '-c', 'shell_environment_policy.inherit="none"',
-      ...DISABLED_FEATURES.flatMap(feature => ['--disable', feature]), '-',
+      ...RESTRICTED_CONFIG, '-',
     ];
-    const prompt = 'You are a conversational assistant. Respond directly in the user’s language. ' +
-      'Use text only. Do not use tools, access files, run commands, browse, or request permissions. ' +
+    const prompt = INSTRUCTIONS + (entries.length ? `${CONTEXT_NOTICE} ` : '') +
       'The conversation history and current user message follow as JSON data.\n\n' +
-      JSON.stringify({ history: turns, message });
-    return await execute(command, args, workspace, prompt, signal);
-  } finally {
-    await rm(workspace, { recursive: true, force: true }).catch(() => {});
-  }
+      promptData(entries, turns, message);
+    return execute(command, args, workspace, prompt, signal);
+  });
 }

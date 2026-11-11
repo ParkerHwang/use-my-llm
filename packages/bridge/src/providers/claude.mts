@@ -4,6 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
+import type { ForkRecord } from '../context/types.mjs';
+import { CONTEXT_NOTICE, promptData, validContext, type ContextEntry } from './prompt.mjs';
 
 const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -19,6 +21,8 @@ interface HistoryTurn {
 export interface ClaudeOptions {
   message?: string;
   history?: readonly HistoryTurn[];
+  /** User-approved snapshot text resolved by the bridge. */
+  context?: readonly ContextEntry[];
   signal?: AbortSignal;
   /** Trusted local configuration only. */
   executable?: string | null;
@@ -51,7 +55,10 @@ const PRINT_ARGS = [
   '--no-session-persistence',
 ];
 
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const ERRORS = {
+  CONTEXT_UNAVAILABLE: 'This shared conversation cannot be continued.',
   INVALID_REQUEST: 'Invalid Claude message or conversation history.',
   PROVIDER_UNAVAILABLE: 'Local Claude Code requires an executable and a locally configured API key.',
   PROVIDER_FAILED: 'Claude Code did not return a usable reply.',
@@ -107,8 +114,20 @@ function apiOnlyEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return childEnv;
 }
 
-function formatPrompt(message: string | undefined, history: readonly HistoryTurn[]) {
-  if (typeof message !== 'string' || !message.trim() || !Array.isArray(history)) {
+function formatPrompt(message: string | undefined, history: readonly HistoryTurn[] | undefined, context?: readonly ContextEntry[]) {
+  const entries = validContext(context);
+  if (typeof message !== 'string' || !message.trim() || !entries) throw failure('INVALID_REQUEST');
+  if (history === undefined) {
+    // A continued copy already holds its own history.
+    if (Buffer.byteLength(message) > MAX_INPUT_BYTES) throw failure('INVALID_REQUEST');
+    return [
+      'Continue this conversation as a text-only copy. Answer the current message conversationally.',
+      ...(entries.length ? [CONTEXT_NOTICE] : []),
+      'The following JSON contains the current message as data.',
+      promptData(entries, undefined, message),
+    ].join('\n\n');
+  }
+  if (!Array.isArray(history)) {
     throw failure('INVALID_REQUEST');
   }
   const transcript = history.map(item => {
@@ -117,12 +136,13 @@ function formatPrompt(message: string | undefined, history: readonly HistoryTurn
     }
     return { role: item.role, content: item.content };
   });
-  const data = JSON.stringify({ history: transcript, message });
-  if (Buffer.byteLength(data) > MAX_INPUT_BYTES) throw failure('INVALID_REQUEST');
+  // The size limit covers what the website wrote; approved context has its own limit.
+  if (Buffer.byteLength(JSON.stringify({ history: transcript, message })) > MAX_INPUT_BYTES) throw failure('INVALID_REQUEST');
   return [
     'You are a text chat assistant. Answer the current message conversationally.',
+    ...(entries.length ? [CONTEXT_NOTICE] : []),
     'The following JSON contains the current message and prior conversation as data.',
-    data,
+    promptData(entries, transcript, message),
   ].join('\n\n');
 }
 
@@ -169,11 +189,12 @@ function execute(
   input: string,
   signal: AbortSignal | undefined,
   env: NodeJS.ProcessEnv,
+  extraArgs: readonly string[] = [],
 ): Promise<string> {
   if (signal?.aborted) throw failure('PROVIDER_ABORTED');
   let child: ChildProcessByStdio<Writable, Readable, null>;
   try {
-    child = spawn(executable, PRINT_ARGS, {
+    child = spawn(executable, [...PRINT_ARGS, ...extraArgs], {
       cwd,
       env,
       shell: false,
@@ -245,12 +266,55 @@ function execute(
   });
 }
 
+export interface ClaudeForkOptions {
+  /** Private details recorded when the user shared the session. */
+  fork?: Extract<ForkRecord, { provider: 'claude' }>;
+  message?: string;
+  context?: readonly ContextEntry[];
+  signal?: AbortSignal;
+  /** Trusted local configuration only. */
+  executable?: string | null;
+  /** Trusted local configuration only. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Continue a user-shared Claude Code session as a copy.
+ *
+ * The session was copied into a bridge-only `CLAUDE_CONFIG_DIR` when the user
+ * approved it. `--resume <id> --fork-session` starts a new session from that
+ * copy and `--no-session-persistence` writes nothing back.
+ *
+ * API key mode only: `--bare` never reads OAuth or keychain credentials, and
+ * the child environment carries `ANTHROPIC_API_KEY` and nothing else that
+ * could select a subscription login. Without a key this fails closed.
+ */
+export async function forkClaude({
+  fork, message, context, signal, executable = findClaude(), env = process.env,
+}: ClaudeForkOptions = {}): Promise<ClaudeReply> {
+  if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure('INVALID_REQUEST');
+  if (signal?.aborted) throw failure('PROVIDER_ABORTED');
+  const input = formatPrompt(message, undefined, context);
+  if (fork?.provider !== 'claude' || !SESSION_ID.test(fork.sessionId)
+    || !isAbsolute(fork.configDir) || !isAbsolute(fork.cwd)) throw failure('CONTEXT_UNAVAILABLE');
+  if (!isExecutable(executable)) throw failure('PROVIDER_UNAVAILABLE');
+  const childEnv = apiOnlyEnvironment(env);
+  childEnv.CLAUDE_CONFIG_DIR = fork.configDir;
+  try {
+    if (!statSync(fork.cwd).isDirectory()) throw new Error('missing');
+  } catch {
+    throw failure('CONTEXT_UNAVAILABLE');
+  }
+  const reply = await execute(executable, fork.cwd, input, signal, childEnv, ['--resume', fork.sessionId, '--fork-session']);
+  return { provider: 'claude', reply };
+}
+
 export async function runClaude({
-  message, history = [], signal, executable = findClaude(), cwd, env = process.env,
+  message, history = [], context, signal, executable = findClaude(), cwd, env = process.env,
 }: ClaudeOptions = {}): Promise<ClaudeReply> {
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure('INVALID_REQUEST');
   if (signal?.aborted) throw failure('PROVIDER_ABORTED');
-  const input = formatPrompt(message, history);
+  const input = formatPrompt(message, history, context);
   if (!isExecutable(executable)) throw failure('PROVIDER_UNAVAILABLE');
   if (cwd !== undefined && (typeof cwd !== 'string' || !isAbsolute(cwd))) {
     throw failure('INVALID_REQUEST');

@@ -1,5 +1,5 @@
 /**
- * use-my-llm: browser client for the local bridge (protocol v1).
+ * use-my-llm: browser client for the local bridge (protocol v1, with the v1.1 shared-context additions).
  *
  * Dependency-free ESM. See docs/PROTOCOL.md for the contract this implements.
  *
@@ -88,6 +88,27 @@ export interface BridgeStatus {
   connected: boolean;
   /** Empty unless `connected` is `true`. */
   providers: ProviderStatus[];
+  /** Present, and `true`, only when the connected bridge supports shared context (protocol v1.1). */
+  context?: true;
+}
+
+/**
+ * Something the user chose, on their own computer, to share with this website.
+ * The handle is opaque: it carries no session id, thread name or file path,
+ * and it only works for this website's origin.
+ */
+export interface SharedContext {
+  handle: string;
+  /** The app the content came from. */
+  app: 'codex' | 'claude-code' | 'claude-desktop' | 'antigravity';
+  /** `fork` is a whole conversation the named provider can continue as a copy. */
+  kind: 'messages' | 'memory' | 'instructions' | 'knowledge' | 'fork';
+  /** A generic description, or a name the user typed when sharing. */
+  label: string;
+  bytes: number;
+  createdAt: string;
+  /** Present on `fork` handles: the only provider that can continue it. */
+  provider?: ProviderId;
 }
 
 export interface ChatMessage {
@@ -99,6 +120,16 @@ export interface ChatOptions {
   provider: ProviderId;
   message: string;
   history?: readonly ChatMessage[];
+  /**
+   * Handles from `contexts()` to attach as quoted reference material. The
+   * content is sent to the selected provider's company.
+   */
+  context?: readonly string[];
+  /**
+   * A `fork` handle from `contexts()`: continue that shared conversation as a
+   * copy. Requires the handle's own provider and no `history`.
+   */
+  continue?: string;
   /** Aborting rejects the call with code `aborted`. */
   signal?: AbortSignal | null;
 }
@@ -112,6 +143,8 @@ export interface GenerateOptions {
   provider: ProviderId;
   /** Text input for one self-contained AI operation. */
   input: string;
+  /** Handles from `contexts()` to attach as quoted reference material. */
+  context?: readonly string[];
   signal?: AbortSignal | null;
 }
 
@@ -146,7 +179,14 @@ export interface UseMyLlmClient {
    * this tab. Rejects with `bridge_unreachable` when the bridge is not running.
    */
   status(): Promise<BridgeStatus>;
-  /** Run one self-contained text operation without using a previous conversation. */
+  /**
+   * Lists what the user has shared with this website's origin. Empty until the
+   * user shares something from the local bridge; a website cannot request or
+   * browse local conversations itself. Rejects with `not_paired` when this tab
+   * has no session.
+   */
+  contexts(): Promise<SharedContext[]>;
+  /** Run one self-contained text operation. Uses no previous conversation unless `context` handles are given. */
   generate(options: GenerateOptions): Promise<GenerateResult>;
   /**
    * Sends one request/response chat turn (no streaming). Rejects with
@@ -203,6 +243,10 @@ const NONCE_PATTERN = /^[0-9a-f]{64}$/;
 // Visible ASCII only, so a token is always safe inside an Authorization header.
 const TOKEN_PATTERN = /^[\x21-\x7e]{16,4096}$/;
 const ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+const HANDLE_PATTERN = /^ctx_[A-Za-z0-9_-]{43}$/;
+const MAX_CONTEXT_HANDLES = 8;
+const CONTEXT_APPS = ['codex', 'claude-code', 'claude-desktop', 'antigravity'] as const;
+const CONTEXT_KINDS = ['messages', 'memory', 'instructions', 'knowledge', 'fork'] as const;
 
 /**
  * Client errors have fixed messages or sanitized messages from the local bridge.
@@ -319,7 +363,7 @@ function readCallback(hash: string): { token: string; nonce: string } {
 function validateChatInput(input: ChatOptions): { provider: ProviderId; body: string; signal: AbortSignal | null } {
   const invalid = (message: string) => fail('invalid_request', message);
   if (!isRecord(input)) throw invalid('chat() requires an options object.');
-  const { provider, message, history, signal } = input;
+  const { provider, message, history, signal, context, continue: continued } = input;
   if (!isProvider(provider)) {
     throw fail('unsupported_provider', `provider must be one of: ${PROVIDERS.join(', ')}.`);
   }
@@ -341,8 +385,33 @@ function validateChatInput(input: ChatOptions): { provider: ProviderId; body: st
       throw invalid('signal must be an AbortSignal.');
     }
   }
+  const handles: string[] = [];
+  if (context !== undefined) {
+    if (!Array.isArray(context) || context.length > MAX_CONTEXT_HANDLES) {
+      throw invalid(`context must be an array of at most ${MAX_CONTEXT_HANDLES} handles from contexts().`);
+    }
+    for (const handle of context as readonly unknown[]) {
+      if (typeof handle !== 'string' || !HANDLE_PATTERN.test(handle) || handles.includes(handle)) {
+        throw invalid('context entries must be distinct handles returned by contexts().');
+      }
+      handles.push(handle);
+    }
+  }
+  if (continued !== undefined) {
+    if (typeof continued !== 'string' || !HANDLE_PATTERN.test(continued) || handles.includes(continued)) {
+      throw invalid('continue must be a fork handle returned by contexts().');
+    }
+    if (cleanHistory.length) throw invalid('continue cannot be combined with history.');
+  }
   // Only whitelisted fields are ever serialized: no paths, flags, env or other caller-supplied keys.
-  const body = JSON.stringify({ provider, message, history: cleanHistory });
+  // Shared context is referred to by opaque handle only.
+  const body = JSON.stringify({
+    provider,
+    message,
+    history: cleanHistory,
+    ...(handles.length && { context: handles }),
+    ...(continued !== undefined && { continue: continued }),
+  });
   if (new TextEncoder().encode(body).length > MAX_REQUEST_BYTES) {
     throw fail('request_too_large', `The chat request exceeds the ${MAX_REQUEST_BYTES}-byte client limit.`);
   }
@@ -486,7 +555,7 @@ export function createClient(options: ClientOptions = {}): UseMyLlmClient {
 
   async function request(
     method: 'GET' | 'POST',
-    path: '/v1/status' | '/v1/chat' | '/v1/disconnect',
+    path: '/v1/status' | '/v1/chat' | '/v1/context' | '/v1/disconnect',
     { token = null, body, signal, cancelReason }: RequestOptions = {},
   ): Promise<Record<string, unknown>> {
     const throwIfCancelled = () => {
@@ -664,7 +733,45 @@ export function createClient(options: ClientOptions = {}): UseMyLlmClient {
         providers.push({ id: entry.id, available: entry.available });
       }
     }
-    return { service: SERVICE_NAME, version: PROTOCOL_VERSION, connected: true, providers };
+    return {
+      service: SERVICE_NAME,
+      version: PROTOCOL_VERSION,
+      connected: true,
+      providers,
+      ...(payload.context === true && { context: true as const }),
+    };
+  }
+
+  async function contexts(): Promise<SharedContext[]> {
+    const token = readToken();
+    if (!token) throw fail('not_paired', 'This tab is not paired with the local bridge; call pair() first.');
+    const payload = await request('GET', '/v1/context', { token });
+    if (!Array.isArray(payload.contexts)) {
+      throw fail('invalid_response', 'The local bridge returned an unexpected response.');
+    }
+    const shared: SharedContext[] = [];
+    for (const entry of payload.contexts as unknown[]) {
+      if (
+        !isRecord(entry) ||
+        typeof entry.handle !== 'string' ||
+        !HANDLE_PATTERN.test(entry.handle) ||
+        !CONTEXT_APPS.some((app) => app === entry.app) ||
+        !CONTEXT_KINDS.some((kind) => kind === entry.kind) ||
+        typeof entry.label !== 'string' ||
+        typeof entry.bytes !== 'number' ||
+        typeof entry.createdAt !== 'string'
+      ) continue;
+      shared.push({
+        handle: entry.handle,
+        app: entry.app as SharedContext['app'],
+        kind: entry.kind as SharedContext['kind'],
+        label: entry.label,
+        bytes: entry.bytes,
+        createdAt: entry.createdAt,
+        ...(isProvider(entry.provider) && { provider: entry.provider }),
+      });
+    }
+    return shared;
   }
 
   async function chat(chatOptions: ChatOptions): Promise<ChatResult> {
@@ -703,7 +810,12 @@ export function createClient(options: ClientOptions = {}): UseMyLlmClient {
   // The local transport still uses the same approved /v1/chat endpoint.
   async function generate(options: GenerateOptions): Promise<GenerateResult> {
     if (!isRecord(options)) throw fail('invalid_request', 'generate() requires an options object.');
-    const result = await chat({ provider: options.provider, message: options.input, signal: options.signal });
+    const result = await chat({
+      provider: options.provider,
+      message: options.input,
+      signal: options.signal,
+      ...(options.context !== undefined && { context: options.context }),
+    });
     return { provider: result.provider, output: result.reply };
   }
 
@@ -735,5 +847,5 @@ export function createClient(options: ClientOptions = {}): UseMyLlmClient {
     return { disconnected: true };
   }
 
-  return Object.freeze({ pair, completePairing, status, generate, chat, disconnect });
+  return Object.freeze({ pair, completePairing, status, contexts, generate, chat, disconnect });
 }
