@@ -2,8 +2,8 @@
 
 The menu bar app starts the use-my-llm bridge on `127.0.0.1:43189`. It supports Apple Silicon and macOS 13.5 or later.
 
-1. Download the notarized Apple Silicon ZIP from the [preview release](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0). The v0.1.0 archive is `LocalHostAgentSDK-macos-arm64.zip` and the app inside is **LocalHostAgent SDK.app** (the name of that published build). Unzip the app and open it. When possible, the first launch copies the app into your `~/Applications` folder and starts that copy.
-2. Select the menu bar item to see whether the bridge is running. The v0.1.0 app labels that item **LocalHostAgent**. A build from this repository labels it **use-my-llm**. If it stopped, check whether another instance is using port `43189` and select **Start Bridge** to try again.
+1. Download the notarized Apple Silicon ZIP from the [preview release](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0). The v0.1.0 archive is `use-my-llm-macos-arm64.zip` and the app inside is **use-my-llm.app**. Unzip the app and open it. When possible, the first launch copies the app into your `~/Applications` folder and starts that copy.
+2. Select the menu bar item to see whether the bridge is running. The v0.1.0 app labels that item **use-my-llm**. If it stopped, check whether another instance is using port `43189` and select **Start Bridge** to try again.
 3. Return to the website you want to connect and use its pairing flow. The app can be started by `localhostagent://start`. The website still needs your approval on the local pairing page.
 
 The app includes Node.js and the bridge. Install and sign in to any available provider CLI separately. The menu bar status reports the bridge listener. Provider availability is reported by the bridge after pairing. Quit the app from the menu bar to stop the bridge and revoke its in-memory sessions.

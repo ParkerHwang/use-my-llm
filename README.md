@@ -85,7 +85,7 @@ Packages are distributed as **[GitHub v0.1.0 release assets](https://github.com/
   ```sh
   npm install /path/to/use-my-llm/packages/browser
   ```
-- **From GitHub Releases:** download the browser package archive from the [v0.1.0 release page](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0) and install it with `npm install ./localhost-agent-sdk-browser-0.1.0.tgz` (or serve the compiled ESM module directly, as shown in [`examples/vanilla`](examples/vanilla)). That v0.1.0 archive was packed before the rename, so the package name inside the file is `@localhost-agent-sdk/browser`. A checkout of this repository installs as `@use-my-llm/browser`.
+- **From GitHub Releases:** download the browser package archive from the [v0.1.0 release page](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0) and install it with `npm install ./use-my-llm-browser-0.1.0.tgz` (or serve the compiled ESM module directly, as shown in [`examples/vanilla`](examples/vanilla)). The package installs as `@use-my-llm/browser`.
 
 ### Browser usage
 
@@ -158,7 +158,7 @@ node packages/bridge/dist/cli.mjs [--port 43189] [--allow-origin https://app.exa
 
 For macOS 13.5 or later on Apple Silicon (`arm64`), an optional menu bar app bundles Node.js and starts the bridge with default settings on `127.0.0.1:43189` (and registers the `localhostagent://start` URL scheme, which carries no site or provider parameters).
 
-- **Download:** Get `LocalHostAgentSDK-macos-arm64.zip` from the [v0.1.0 release assets](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0) and see [`packages/desktop-macos/README.md`](packages/desktop-macos/README.md) for installation and local packaging instructions. The app in that archive is **LocalHostAgent SDK.app**. Builds from this repository produce `use-my-llm.app`.
+- **Download:** Get `use-my-llm-macos-arm64.zip` from the [v0.1.0 release assets](https://github.com/ParkerHwang/use-my-llm/releases/tag/v0.1.0) and see [`packages/desktop-macos/README.md`](packages/desktop-macos/README.md) for installation and local packaging instructions. The app in that archive is **use-my-llm.app**.
 - **Verification note:** The release archive is Developer ID signed, notarized by Apple, and checked with Gatekeeper on the build Mac, but a downloaded first launch on a separate clean Mac has not yet been verified.
 
 ---
