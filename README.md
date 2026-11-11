@@ -4,7 +4,7 @@
 
 Instead of building a stand-alone chat app or collecting provider API keys on your server, your website asks the visitor to approve your exact web origin on a local pairing page. Once paired, the browser client sends text requests over `127.0.0.1` to the local bridge and returns plain-text output that your application renders in its own UI.
 
-- **Built for website features, not a chat-app clone:** Each call is a fresh request/response operation (`generate()` or `chat()` with app-supplied history). It does not read or resume existing conversations in the visitor's desktop apps.
+- **Local context by choice:** A site can use selected conversation excerpts, memory, instruction files, or conversation copies when the visitor separately shares them through the local picker.
 - **No provider credentials in the browser:** The bridge protocol does not send provider API keys, CLI tokens, executable paths, or local configuration to your website.
 - **Local bridge, remote inference:** The bridge runs on `127.0.0.1`, while model inference runs on the configured provider's service.
 - **Explicit per-website approval:** A webpage cannot silently install or launch a native program, and every exact website origin (`https://...`, `http://localhost:<port>`, or `http://127.0.0.1:<port>`) must be approved locally by the user.
@@ -32,7 +32,7 @@ Providers are configured locally on the visitor's machine. Websites can only req
 
 > **Note on provider availability:** When `status()` reports `available: true`, it means the bridge detected the required local binary or environment setup. It does not guarantee that the user's login, API key, quota, or billing is active.
 >
-> **Note on Antigravity ACP:** An exploratory ACP transport exists in the codebase for internal testing, but it is disabled and not exposed to websites because tool containment and consumer-account policy fit have not been established.
+> **Antigravity ACP:** Experimental continuation is off by default. The optional local flag requires a compatible `agy acp` build. It starts a new session from the approved transcript and has tool and persistence limits. See [Security](SECURITY.md).
 
 ---
 
@@ -135,8 +135,9 @@ Full types and error codes are in [`packages/browser/src/index.ts`](packages/bro
 - `client.completePairing()` — Validates and consumes the `#localhostagent_token=...&localhostagent_nonce=...` callback fragment on page load. Restores any pre-pairing URL fragment. Returns `{ paired: true }` or `{ paired: false, reason: 'no_callback' }`.
 - `client.status()` — Queries `GET /v1/status`. Returns `{ service: 'localhost-agent-sdk', version: 1, connected: boolean, providers: [{ id, available }] }`.
 - `client.pair({ returnUrl? })` — Navigates the current tab to the bridge's approval page for this exact origin. `returnUrl` defaults to `location.href` and must share the exact same origin.
-- `client.generate({ provider, input, signal? })` — Sends a single self-contained text request with no prior history and returns `{ provider, output }`.
-- `client.chat({ provider, message, history?, signal? })` — Sends a request/response turn with optional caller-managed `history` (`Array<{ role: 'user' | 'assistant', content: string }>`), returning `{ provider, reply }`. Does not stream.
+- `client.generate({ provider, input, context?, signal? })` — Sends a single self-contained text request with no prior history and returns `{ provider, output }`.
+- `client.chat({ provider, message, history?, context?, continue?, signal? })` — Sends a request/response turn with optional caller-managed `history` (`Array<{ role: 'user' | 'assistant', content: string }>`), returning `{ provider, reply }`. Does not stream.
+- `client.contexts()` — Lists the paired site's locally approved context handles.
 - `client.disconnect()` — Aborts in-flight requests from this client, clears the tab's `sessionStorage` token, and calls `POST /v1/disconnect` on the bridge.
 
 ---
@@ -162,6 +163,21 @@ For macOS 13.5 or later on Apple Silicon (`arm64`), an optional menu bar app bun
 - **Verification note:** The release archive is Developer ID signed, notarized by Apple, and checked with Gatekeeper on the build Mac, but a downloaded first launch on a separate clean Mac has not yet been verified.
 
 ---
+
+## Share local context
+
+On macOS, choose **Shared Context…** from the menu bar. In a terminal, run `use-my-llm context pick` (use `context sources --app antigravity --antigravity-acp` to list live ACP session metadata locally). Enter the website's exact origin, choose an item, and review the redacted text before approving. Use **Manage Sharing…** or `use-my-llm context revoke --origin https://app.example.com` to remove a site's access and delete its snapshots and local copies. Context can be selected before or after the site pairs.
+
+| Source | Items you can select |
+| --- | --- |
+| Codex | Sessions, archived and Zstandard rollouts (Node.js 22.15+ for Zstandard), memory, and `AGENTS.md` |
+| Claude Code | Sessions, auto memory, and `CLAUDE.md` |
+| Claude Desktop | Official export ZIP imported locally, or readable conversation and memory files from Claude Desktop in 3P mode |
+| Antigravity | Local knowledge and brain transcripts or artifacts, where the installed version stores them as supported text formats |
+
+After pairing, a website can call `client.contexts()` to get approved handles and pass them in `context` to `client.generate()` or `client.chat()`. A conversation-copy handle goes in `client.chat({ provider, message, continue: handle })`. See the [protocol](docs/PROTOCOL.md#shared-context-v11).
+
+Codex continues from the approved transcript with the standard local CLI login. To use the CLI's native `exec fork` with the approved copy, sign into a separate, private Codex home using the official CLI and set `LOCALHOSTAGENT_CODEX_FORK_HOME` to that directory when starting the bridge. The bridge never stages a fork in your original Codex home. Claude Code continuation requires `--enable-claude-api`, a Claude Code executable on the bridge's PATH and an Anthropic API key. The Desktop ZIP and 3P readers share text. They do not open a Desktop chat.
 
 ## Optional API-key provider modes
 
@@ -207,7 +223,7 @@ See [`SECURITY.md`](SECURITY.md) and [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for 
 
 - **Loopback-only listener and client:** The bridge binds exclusively to `127.0.0.1` and checks the `Host` header. The browser SDK refuses any non-loopback `bridgeUrl` and never follows HTTP redirects, preventing bearer tokens from being sent to remote hosts.
 - **Origin-scoped, short-lived sessions:** Pairing rejects a present `Sec-Fetch-Dest` header unless it is `document` (requests without that header are accepted) and uses a one-time CSRF token on the local approval form. Tokens default to a 30-minute TTL, are stored in tab-scoped `sessionStorage`, and are checked against the exact `Origin` header on every request.
-- **Constrained request surface:** Websites can submit only `{ provider, message, history }` within strict byte and turn limits. Websites cannot pass binary paths, working directories, environment variables, CLI flags, or model names.
+- **Constrained request surface:** Websites can submit only `{ provider, message, history?, context?, continue? }` within strict byte and turn limits. Websites cannot pass binary paths, working directories, environment variables, CLI flags, or model names.
 - **Defense-in-depth tool restrictions, not a guaranteed sandbox:** The Codex and Antigravity adapters use temporary directories and pass flags/configs intended to disable tools, shell execution, file access, MCP servers, and inherited user configs (for example, `codex exec --sandbox read-only` with disabled tool features, and `CapabilitiesConfig(enabled_tools=[], enable_subagents=False)` with `deny("*")` for `google-antigravity`). However, these restrictions depend on the exact CLI or SDK version installed on the user's machine. This preview is **not** a general-purpose security sandbox and does not guarantee that a provider can never access local data.
 - **Trust boundary:** Approved websites can submit prompts using the visitor's configured provider and receive the generated text. Users should approve only websites they trust, and should not run the bridge as an administrator or expose it beyond `127.0.0.1`.
 

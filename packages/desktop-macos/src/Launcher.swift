@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import SwiftUI
 
 final class BridgeApp: NSObject, NSApplicationDelegate {
     private enum State {
@@ -22,6 +23,7 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
     private var startupTimeout: DispatchWorkItem?
     private var isInstalling = true
     private var isQuitting = false
+    private var contextWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(
@@ -50,6 +52,11 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         startItem.target = self
         startItem.action = #selector(startBridge)
         menu.addItem(startItem)
+        menu.addItem(.separator())
+        let contextItem = NSMenuItem(title: "Shared Context…", action: #selector(showSharedContext), keyEquivalent: "")
+        contextItem.target = self
+        menu.addItem(contextItem)
+        menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit use-my-llm", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -123,34 +130,15 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
 
     @objc private func startBridge() {
         guard !isInstalling, !isQuitting, child == nil else { return }
-        guard let resources = Bundle.main.resourceURL else {
-            state = .stopped("The app bundle is missing its resources.")
-            updateMenu()
-            return
-        }
-        let node = resources.appendingPathComponent("node")
-        let entry = resources.appendingPathComponent("app/packages/bridge/dist/cli.mjs")
-        guard FileManager.default.isExecutableFile(atPath: node.path),
-              FileManager.default.fileExists(atPath: entry.path) else {
+        guard let command = BridgeCommand() else {
             state = .stopped("The app bundle is missing the bridge or Node runtime.")
             updateMenu()
             return
         }
 
-        let process = Process()
+        let process = command.process(arguments: [])
         let pipe = Pipe()
-        process.executableURL = node
-        process.arguments = [entry.path]
-        process.currentDirectoryURL = resources
-        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        process.environment = [
-            "HOME": home.path,
-            "PATH": "\(home.appendingPathComponent(".local/bin").path):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "TMPDIR": FileManager.default.temporaryDirectory.path
-        ]
         pipe.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
             let data = handle.availableData
             guard !data.isEmpty, let process else {
@@ -250,6 +238,30 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func showSharedContext() {
+        guard let command = BridgeCommand() else {
+            let alert = NSAlert()
+            alert.messageText = "The app bundle is missing the bridge or Node runtime."
+            alert.runModal()
+            return
+        }
+        if contextWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 860, height: 590),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false
+            )
+            window.title = "Shared Context"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: ContextPicker(command: command))
+            window.contentMinSize = NSSize(width: 750, height: 500)
+            window.center()
+            contextWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        contextWindow?.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -263,8 +275,14 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = BridgeApp()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+@main
+struct Launcher {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = BridgeApp()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
+        withExtendedLifetime(delegate) {}
+    }
+}

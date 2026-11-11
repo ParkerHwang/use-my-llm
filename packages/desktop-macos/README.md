@@ -10,6 +10,12 @@ The app includes Node.js and the bridge. Install and sign in to any available pr
 
 To update an existing app, quit it and replace your copy in Applications with the new version. First-launch installation preserves any copy already installed there. A build from this repository installs as `~/Applications/use-my-llm.app` and does not replace `~/Applications/LocalHostAgent SDK.app`. Quit the older app before starting the new one so they do not both try to use port `43189`.
 
+## Share local context
+
+In a build with protocol v1.1, open **Shared Context…** from the menu bar. Select an app, project and item. For conversations, choose a range of messages or the whole text copy when available. Enter the website origin and use **Review Sharing…** to inspect the redacted text and approve the share. **Manage Sharing…** lists each website and revokes its snapshots and local copies. **Import Export ZIP…** adds an official Claude Desktop export to the local picker.
+
+The menu-bar bridge starts with default provider settings. Start the bridge from a terminal for optional provider modes. The two use the same context store by default. See [Security](../../SECURITY.md) for the sharing and provider boundaries.
+
 ## Build a local preview
 
 On an Apple Silicon Mac, install Node.js 22 or later, Python 3.10 or later and the Xcode Command Line Tools. From the repository root, run:
