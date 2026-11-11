@@ -1,0 +1,12 @@
+{
+  "name": "@localhost-agent-sdk/bridge",
+  "version": "0.1.0",
+  "description": "Local approval-based bridge for LocalHostAgent SDK",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "localhost-agent": "./dist/cli.mjs" },
+  "exports": { ".": { "types": "./dist/server.d.mts", "default": "./dist/server.mjs" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json && node ./scripts/copy-python.mjs" },
+  "engines": { "node": ">=22" }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@localhost-agent-sdk/browser",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Dependency-free browser client for the LocalHostAgent local bridge (protocol v1).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
