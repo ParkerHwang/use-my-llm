@@ -2,7 +2,7 @@
 
 Add AI features such as summarization, drafting, or analysis to a website through a bridge running on the visitor's own computer. The bridge asks the person to approve the website's exact origin; the browser SDK then sends text requests to the local bridge without receiving provider credentials. Your application owns its interface and decides how the resulting text is used.
 
-**Developer preview.** The existing Codex Connect demo proved a local Codex round trip. This repository is a new implementation and must be evaluated independently. It currently implements request/response text chat; it does not resume conversations in the user's existing desktop app. A webpage cannot silently install or launch a native program: the user must install and start the bridge and approve the website.
+**Developer preview.** The example has been tested end to end with the local Codex CLI on one Mac. The SDK currently implements request/response text operations; it does not resume conversations in the user's existing desktop app. A webpage cannot silently install or launch a native program: the user must install and start the bridge and approve the website.
 
 ## Provider modes
 
@@ -34,11 +34,11 @@ node examples/vanilla/server.mjs
 
 Open `http://127.0.0.1:5173/` in a browser on the same computer, select **Connect AI**, and approve the exact origin on the local approval page. Paste text and select **Summarize** to exercise an AI feature in an ordinary web page. Each summary is a fresh request and does not use an existing desktop conversation.
 
-The Mac menu bar app is an optional convenience for Apple Silicon macOS 13.5 or later; see [its build and installation instructions](packages/desktop-macos/README.md). A Node-based bridge can also be run from the command line on other platforms; platform and provider compatibility still require testing.
+The Mac menu bar app is an optional convenience for Apple Silicon macOS 13.5 or later. Download the notarized app from the [latest preview release](https://github.com/ParkerHwang/LocalHostAgentSDK/releases/tag/v0.1.0); see [its installation instructions](packages/desktop-macos/README.md). A Node-based bridge can also be run from the command line on other platforms; platform and provider compatibility still require testing.
 
 ## Use the browser client
 
-The TypeScript package source is in [`packages/browser`](packages/browser); its build generates JavaScript and TypeScript declarations. After building a local checkout, a bundler-based website can install it with `npm install /path/to/LocalHostAgentSDK/packages/browser`; it is not yet published to the npm registry. The example uses the compiled JavaScript module without a bundler.
+The TypeScript package source is in [`packages/browser`](packages/browser); its build generates JavaScript and TypeScript declarations. After building a local checkout, a bundler-based website can install it with `npm install /path/to/LocalHostAgentSDK/packages/browser`; it is not yet published to the npm registry. A browser package archive is also available on the [preview release](https://github.com/ParkerHwang/LocalHostAgentSDK/releases/tag/v0.1.0). The example uses the compiled JavaScript module without a bundler.
 
 ```js
 import { createClient } from '@localhost-agent-sdk/browser';
