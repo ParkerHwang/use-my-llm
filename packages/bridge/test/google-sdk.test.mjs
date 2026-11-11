@@ -26,7 +26,7 @@ async function temporaryDirectory(t, prefix) {
 }
 
 async function fakePython(t, script) {
-  const cwd = await temporaryDirectory(t, 'localhostagent-fake-python-');
+  const cwd = await temporaryDirectory(t, 'use-my-llm-fake-python-');
   const executable = join(cwd, 'fake-python.mjs');
   await writeFile(executable, `#!/usr/bin/env node\n${script}\n`, { mode: 0o700 });
   return { cwd, executable };
@@ -245,7 +245,7 @@ testPosix('Python worker enforces the SDK version and tool policy with a synthet
   });
   if (version?.status !== 0) { t.skip('Python 3.10 or later is needed for the synthetic SDK test'); return; }
 
-  const root = await temporaryDirectory(t, 'localhostagent-google-');
+  const root = await temporaryDirectory(t, 'use-my-llm-google-');
   const cwd = join(root, 'workspace');
   const home = join(root, 'home');
   for (const path of [cwd, home, join(root, 'sessions'), join(root, 'data')]) await mkdir(path);

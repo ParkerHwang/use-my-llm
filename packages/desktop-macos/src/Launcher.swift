@@ -50,7 +50,7 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         startItem.target = self
         startItem.action = #selector(startBridge)
         menu.addItem(startItem)
-        let quitItem = NSMenuItem(title: "Quit LocalHostAgent SDK", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit use-my-llm", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         item.menu = menu
@@ -61,13 +61,13 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         let title: String
         switch state {
         case .starting:
-            title = "LocalHostAgent …"
+            title = "use-my-llm …"
             statusLabel.title = "Starting the local bridge…"
         case .running:
-            title = "LocalHostAgent"
+            title = "use-my-llm"
             statusLabel.title = "Bridge running on 127.0.0.1:\(Self.bridgePort)"
         case .stopped(let reason):
-            title = "LocalHostAgent (stopped)"
+            title = "use-my-llm (stopped)"
             statusLabel.title = reason
         }
         statusItem?.button?.title = title
@@ -79,12 +79,12 @@ final class BridgeApp: NSObject, NSApplicationDelegate {
         let files = FileManager.default
         let source = Bundle.main.bundleURL.standardizedFileURL
         let applications = files.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
-        let installed = applications.appendingPathComponent("LocalHostAgent SDK.app", isDirectory: true)
+        let installed = applications.appendingPathComponent("use-my-llm.app", isDirectory: true)
         let isInApplications = source.deletingLastPathComponent() == URL(fileURLWithPath: "/Applications", isDirectory: true)
         if source != installed.standardizedFileURL && !isInApplications && !files.fileExists(atPath: installed.path) {
             do {
                 try files.createDirectory(at: applications, withIntermediateDirectories: true)
-                let staging = applications.appendingPathComponent(".localhostagent-\(UUID().uuidString).app", isDirectory: true)
+                let staging = applications.appendingPathComponent(".use-my-llm-\(UUID().uuidString).app", isDirectory: true)
                 defer { try? files.removeItem(at: staging) }
                 try files.copyItem(at: source, to: staging)
                 try files.moveItem(at: staging, to: installed)

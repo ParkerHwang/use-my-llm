@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an ad-hoc signed LocalHostAgent SDK app for Apple Silicon Macs."""
+"""Build an ad-hoc signed use-my-llm app for Apple Silicon Macs."""
 
 import argparse
 import hashlib
@@ -18,8 +18,8 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parent
 REPO = PACKAGE.parents[1]
 BRIDGE = PACKAGE.parent / "bridge"
-APP_NAME = "LocalHostAgent SDK"
-APP_EXECUTABLE = "LocalHostAgentSDK"
+APP_NAME = "use-my-llm"
+APP_EXECUTABLE = "use-my-llm"
 APP_ID = "dev.localhostagent.sdk"
 MINIMUM_MACOS = "13.5"
 NODE_VERSION = "v24.22.2"
@@ -165,7 +165,7 @@ def main() -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        with tempfile.TemporaryDirectory(prefix=".localhostagent-build-", dir=output.parent) as directory:
+        with tempfile.TemporaryDirectory(prefix=".use-my-llm-build-", dir=output.parent) as directory:
             work = Path(directory)
             if args.node_archive:
                 archive_path = args.node_archive.resolve()
@@ -175,7 +175,7 @@ def main() -> None:
 
             release = work / "release"
             app = release / f"{APP_NAME}.app"
-            zip_path = release / "LocalHostAgentSDK-macos-arm64.zip"
+            zip_path = release / "use-my-llm-macos-arm64.zip"
             build_app(app, archive_path, args.version, args.build_number)
             subprocess.run(
                 ["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(zip_path)],

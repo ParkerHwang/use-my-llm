@@ -1,9 +1,9 @@
-# @localhost-agent-sdk/browser
+# @use-my-llm/browser
 
-TypeScript-first, dependency-free browser client for LocalHostAgent SDK. A local bridge must be running on the visitor's computer. The visitor approves the exact website origin before it can send requests. The website never receives provider credentials.
+TypeScript-first, dependency-free browser client for use-my-llm. A local bridge must be running on the visitor's computer. The visitor approves the exact website origin before it can send requests. The website never receives provider credentials.
 
 ```ts
-import { createClient } from '@localhost-agent-sdk/browser';
+import { createClient } from '@use-my-llm/browser';
 
 const client = createClient();
 await client.completePairing(); // on page load

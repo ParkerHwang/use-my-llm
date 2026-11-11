@@ -68,7 +68,7 @@ def main(protocol):
     workspace = Path.cwd().resolve()
     root = workspace.parent
     home, sessions, data = (root / name for name in ("home", "sessions", "data"))
-    if (workspace.name != "workspace" or not root.name.startswith("localhostagent-google-")
+    if (workspace.name != "workspace" or not root.name.startswith("use-my-llm-google-")
             or Path.home().resolve() != home
             or any(not directory.is_dir() or directory.is_symlink()
                    for directory in (home, sessions, data))):

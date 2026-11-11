@@ -1,10 +1,13 @@
 {
-  "name": "@localhost-agent-sdk/bridge",
+  "name": "@use-my-llm/bridge",
   "version": "0.1.0",
-  "description": "Local approval-based bridge for LocalHostAgent SDK",
+  "description": "Local approval-based bridge for use-my-llm",
   "type": "module",
   "license": "MIT",
-  "bin": { "localhost-agent": "./dist/cli.mjs" },
+  "bin": {
+    "use-my-llm": "./dist/cli.mjs",
+    "localhost-agent": "./dist/cli.mjs"
+  },
   "exports": { ".": { "types": "./dist/server.d.mts", "default": "./dist/server.mjs" } },
   "files": ["dist"],
   "scripts": { "build": "tsc -p tsconfig.json && node ./scripts/copy-python.mjs" },

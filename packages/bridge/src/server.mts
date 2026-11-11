@@ -313,7 +313,7 @@ function duration(value: number, name: string): void {
 }
 
 /**
- * Create a loopback-only LocalHostAgent v1 bridge. Trusted local code supplies
+ * Create a loopback-only use-my-llm v1 bridge. Trusted local code supplies
  * the provider runner and synchronous availability list. Runners should honor
  * AbortSignal to stop their own work when the request or session ends.
  */

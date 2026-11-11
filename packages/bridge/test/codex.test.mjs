@@ -9,7 +9,7 @@ import { findCodex, runCodex } from '../dist/providers/codex.mjs';
 const WINDOWS = process.platform === 'win32';
 
 async function tempDirectory(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'localhostagent-codex-test-'));
+  const directory = await mkdtemp(join(tmpdir(), 'use-my-llm-codex-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
@@ -51,7 +51,7 @@ test('uses only a valid absolute executable for an explicit local override', asy
 });
 
 test('option-like prompts stay in stdin and do not expand CLI privileges', { skip: WINDOWS }, async t => {
-  setEnvironment(t, 'LOCALHOSTAGENT_TEST_SECRET', 'test-sentinel');
+  setEnvironment(t, 'USE_MY_LLM_TEST_SECRET', 'test-sentinel');
   const options = await fixture(t, `
     let prompt = '';
     process.stdin.setEncoding('utf8');
@@ -59,7 +59,7 @@ test('option-like prompts stay in stdin and do not expand CLI privileges', { ski
     process.stdin.on('end', () => {
       const text = JSON.stringify({
         args: process.argv.slice(2), prompt, cwd: process.cwd(),
-        inheritedTestSecret: Object.hasOwn(process.env, 'LOCALHOSTAGENT_TEST_SECRET'),
+        inheritedTestSecret: Object.hasOwn(process.env, 'USE_MY_LLM_TEST_SECRET'),
       });
       process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text}}) + '\\n');
       process.stdout.write(JSON.stringify({type:'turn.completed'}));

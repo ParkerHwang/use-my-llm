@@ -13,7 +13,7 @@ const TEST_ENV = {
 };
 
 async function fakeClaude(t, script) {
-  const directory = await mkdtemp(join(tmpdir(), 'localhostagent-fake-claude-'));
+  const directory = await mkdtemp(join(tmpdir(), 'use-my-llm-fake-claude-'));
   t.after(() => rm(directory, { force: true, recursive: true }));
   const executable = join(directory, 'fake-claude.mjs');
   await writeFile(executable, `#!/usr/bin/env node\n${script}\n`, { mode: 0o700 });

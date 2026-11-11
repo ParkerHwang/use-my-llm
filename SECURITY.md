@@ -1,6 +1,6 @@
 # Security
 
-LocalHostAgent is a developer preview. The browser and bridge communicate on loopback; each website origin requires explicit local approval. A paired website can submit prompts and receive the resulting text, so users should approve only websites they trust.
+use-my-llm is a developer preview. The browser and bridge communicate on loopback; each website origin requires explicit local approval. A paired website can submit prompts and receive the resulting text, so users should approve only websites they trust.
 
 The web API does not accept executable paths, shell commands, working directories, environment variables, provider credentials, or model configuration. The bridge bounds request sizes and session lifetimes, uses separate per-origin sessions, and attempts to stop provider work when a session is revoked or the bridge exits.
 
