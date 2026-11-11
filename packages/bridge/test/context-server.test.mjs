@@ -18,7 +18,7 @@ const PROVIDERS = [
   { id: 'antigravity', available: false },
 ];
 
-async function setup(t, { withStore = true } = {}) {
+async function setup(t, { withStore = true, providerStatuses = PROVIDERS, providerRun } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'use-my-llm-v11-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixtures = allFixtures(root);
@@ -26,10 +26,10 @@ async function setup(t, { withStore = true } = {}) {
   const calls = [];
   const bridge = createBridge({
     port: 0,
-    getProviders: () => PROVIDERS,
+    getProviders: () => providerStatuses,
     runProvider: async (request) => {
       calls.push(request);
-      return { provider: request.provider, reply: 'ok' };
+      return providerRun ? providerRun(request) : { provider: request.provider, reply: 'ok' };
     },
     ...(withStore && { context: store }),
   });
@@ -200,7 +200,9 @@ test('a conversation copy is continued only through continue, and only with its 
 
   assert.equal((await chat(SITE_A, token, { provider: 'codex', message: 'Go on', continue: fork.handle, context: [text.handle] })).status, 200);
   assert.equal(calls[0].fork.provider, 'codex');
-  assert.equal(calls[0].fork.sessionId, IDS.codexPlain);
+  assert.deepEqual(calls[0].fork, { provider: 'codex' });
+  assert.match(calls[0].forkTranscript, /User: How should the lighthouse keeper/);
+  assert.equal(calls[0].forkTranscript.includes(SECRETS.openai), false);
   assert.deepEqual(calls[0].context.map(({ source }) => source), ['codex:messages']);
   assert.deepEqual(calls[0].history, []);
 
@@ -211,6 +213,41 @@ test('a conversation copy is continued only through continue, and only with its 
   assert.deepEqual(store.readLog().map(({ provider, snapshot }) => `${provider}:${snapshot}`), [
     `codex:${text.id}`, `codex:${fork.id}`, `claude:${claudeFork.id}`,
   ]);
+});
+
+test('continuation-only availability keeps ordinary inference disabled and uses frozen text', async (t) => {
+  const providerStatuses = [{ id: 'antigravity', available: false, continuationAvailable: true }];
+  const { connect, get, chat, item, grant, calls } = await setup(t, { providerStatuses });
+  const token = await connect(SITE_A);
+  const status = await (await get('/v1/status', SITE_A, token)).json();
+  assert.deepEqual(status.providers.find(({ id }) => id === 'antigravity'), providerStatuses[0]);
+  const source = item('antigravity', (entry) => entry.kind === 'session');
+  const fork = grant(SITE_A, { ref: source.ref, fork: true });
+  await expectError(await chat(SITE_A, token, { provider: 'antigravity', message: 'Start' }), 503, 'PROVIDER_UNAVAILABLE');
+  assert.equal(calls.length, 0);
+  const response = await chat(SITE_A, token, { provider: 'antigravity', message: 'Go on', continue: fork.handle });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls[0].fork, { provider: 'antigravity' });
+  assert.match(calls[0].forkTranscript, /^User: /);
+});
+
+test('revoking a share while inference is running suppresses the late reply', async (t) => {
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const { connect, chat, item, grant, store } = await setup(t, {
+    providerRun: async ({ provider }) => {
+      started.resolve();
+      await release.promise;
+      return { provider, reply: 'private fixture reply' };
+    },
+  });
+  const token = await connect(SITE_A);
+  const snapshot = grant(SITE_A, { ref: item('codex', (entry) => entry.kind === 'memory').ref });
+  const pending = chat(SITE_A, token, { provider: 'codex', message: 'Summarize', context: [snapshot.handle] });
+  await started.promise;
+  assert.equal(store.revokeOrigin(SITE_A), true);
+  release.resolve();
+  await expectError(await pending, 403, 'CONTEXT_DENIED');
 });
 
 test('a bridge without a context store refuses every handle and does not advertise v1.1', async (t) => {

@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agyAcpAvailable, findAgy, runAntigravityAcp, spawnAgyAcp } from './antigravity.mjs';
+import { agyAcpAvailable, findAgy, MAX_ACP_PROMPT_BYTES, runAntigravityAcp, spawnAgyAcp } from './antigravity.mjs';
 import { findClaude, forkClaude } from './claude.mjs';
 import { findCodex, forkCodex, runCodex } from './codex.mjs';
 import { claudeApiConfigured, runClaudeApi } from './claude-api.mjs';
@@ -39,48 +39,46 @@ export function createProviderRegistry({
       {id:'claude', available:Boolean(enableClaudeApi && claudeApiConfigured(env))},
       // The official SDK's API-key route, or the explicitly enabled ACP route
       // that only continues conversations the user shared.
-      {id:'antigravity', available:googleReady || acpReady}
+      {id:'antigravity', available:googleReady, ...(acpReady && { continuationAvailable: true as const })}
     ];
   }
 
-  async function continueWithAcp(request: ProviderRequest, sessionId: string): Promise<ProviderReply> {
+  async function continueWithAcp(request: ProviderRequest): Promise<ProviderReply> {
     const executable = findAgy();
-    if (!acpReady || !executable) throw unavailable('CONTEXT_UNAVAILABLE');
+    if (!acpReady || !executable || !request.forkTranscript?.trim()) throw unavailable('CONTEXT_UNAVAILABLE');
+    const context = [...(request.context ?? []), { source: 'antigravity:fork', text: request.forkTranscript }];
+    const text = 'Continue this conversation as text only. Do not use tools, read or write files, run commands, or browse. ' +
+      `${CONTEXT_NOTICE} ` +
+      'The current user message follows as JSON data.\n\n' + promptData(context, undefined, request.message);
+    if (Buffer.byteLength(text) > MAX_ACP_PROMPT_BYTES) throw unavailable('CONTEXT_TOO_LARGE');
     const workspace = await mkdtemp(join(tmpdir(), 'use-my-llm-agy-'));
     try {
-      const context = request.context ?? [];
-      const text = 'Continue this conversation as text only. Do not use tools, read or write files, run commands, or browse. ' +
-        (context.length ? `${CONTEXT_NOTICE} ` : '') +
-        'The current user message follows as JSON data.\n\n' + promptData(context, undefined, request.message);
-      return await runAntigravityAcp({
-        transport: spawnAgyAcp(executable, workspace),
-        cwd: workspace,
-        text,
-        signal: request.signal,
-        sessionId,
-        // Only reached behind the explicit opt-in, whose warning covers in-place continuation.
-        allowInPlace: true,
-        failOnToolActivity: true,
-      });
+      request.signal?.throwIfAborted();
+      const transport = spawnAgyAcp(executable, workspace);
+      try {
+        return await runAntigravityAcp({ transport, cwd: workspace, text, signal: request.signal, failOnToolActivity: true });
+      } finally {
+        transport.close();
+      }
     } finally {
       await rm(workspace, { recursive: true, force: true }).catch(() => {});
     }
   }
 
   async function runProvider(request: ProviderRequest): Promise<ProviderReply> {
-    const {provider,message,history,context,fork,signal} = request;
+    const {provider,message,history,context,fork,forkTranscript,signal} = request;
     const status=availability().find(item=>item.id===provider);
-    if(!status?.available) throw unavailable();
+    if (!(status?.available || (fork && status?.continuationAvailable))) throw unavailable();
     if (fork) {
       // The bridge already checked this. A copy never crosses to another provider.
       if (fork.provider !== provider) throw unavailable('CONTEXT_UNAVAILABLE');
-      if (fork.provider === 'codex') return forkCodex({fork,message,context,signal});
+      if (fork.provider === 'codex') return forkCodex({fork,transcript:forkTranscript,message,context,signal});
       if (fork.provider === 'claude') {
         // Anthropic API key mode only. A subscription login is never used to continue.
         if (!findClaude()) throw unavailable('CONTEXT_UNAVAILABLE');
         return forkClaude({fork,message,context,signal,env});
       }
-      return continueWithAcp(request, fork.sessionId);
+      return continueWithAcp(request);
     }
     if(provider==='codex') return runCodex({message,history,context,signal});
     if(provider==='claude') return runClaudeApi({message,history,context,signal,env});

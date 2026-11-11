@@ -1,7 +1,7 @@
 // Context injection and continued copies, against fake executables and a mock ACP agent.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -96,42 +96,59 @@ test('Codex receives shared context as a quoted JSON array and keeps every isola
   await assert.rejects(runCodex({ executable: codex, cwd: root, message: 'Hi', context: [{ source: 'x', text: 'y'.repeat(400_001) }] }), { code: 'INVALID_MESSAGE' });
 });
 
-test('a Codex session is continued as an ephemeral copy and the original files do not change', { skip: WINDOWS }, async (t) => {
+test('Codex continues the frozen redacted copy even if the original changes or is removed', { skip: WINDOWS }, async (t) => {
   const { root, codex, store, item, grant } = setup(t);
   const fake = executable(root, 'codex-fixture', CODEX_ECHO);
-  const meta = grant({ ref: item('codex', (entry) => entry.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref, fork: true });
-  const [{ fork }] = store.resolve(SITE, [meta.handle]);
   const before = treeHash(codex.home);
-
-  const { provider, reply } = await forkCodex({ fork, executable: fake, cwd: root, message: 'What next?', context: CONTEXT.slice(0, 1) });
+  const meta = grant({ ref: item('codex', (entry) => entry.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref, fork: true });
+  const [{ fork, entry }] = store.resolve(SITE, [meta.handle]);
+  const run = () => forkCodex({ fork, transcript: entry.text, executable: fake, cwd: root, message: 'What next?', context: CONTEXT.slice(0, 1) });
+  const { provider, reply } = await run();
   assert.equal(provider, 'codex');
   const observed = JSON.parse(reply);
-  assert.deepEqual(observed.args.slice(0, 3), ['exec', 'fork', IDS.codexPlain]);
-  assert.equal(observed.args.at(-1), '-');
+  assert.equal(observed.args.includes('fork'), false);
+  assert.deepEqual(JSON.parse(observed.prompt.split('\n\n').at(-1)), {
+    context: [...CONTEXT.slice(0, 1), { source: 'codex:fork', text: entry.text }], message: 'What next?',
+  });
+  assert.equal(entry.text.includes(SECRETS.openai), false);
+  assert.equal(treeHash(codex.home), before, 'the Codex home is byte-for-byte unchanged');
+
+  appendFileSync(codex.plain, 'content added after approval\n');
+  rmSync(codex.plain);
+  assert.equal(JSON.parse((await run()).reply).prompt, observed.prompt);
+});
+
+test('native Codex fork stages only the approved text in a separate home and removes the seed', { skip: WINDOWS }, async (t) => {
+  const { root, codex, store, item, grant } = setup(t);
+  const forkHome = join(root, 'native-fork-home');
+  mkdirSync(forkHome);
+  const fake = executable(root, 'codex-fixture', `
+    const fs = require('node:fs');
+    const home = process.env.CODEX_HOME;
+    const rollout = fs.readdirSync(home, { recursive: true }).find(name => name.endsWith('.jsonl'));
+    const seed = fs.readFileSync(require('node:path').join(home, rollout), 'utf8');
+  ` + CODEX_ECHO.replace('prompt, cwd:', 'prompt, seed, cwd:'));
+  const before = treeHash(codex.home);
+  const meta = grant({ ref: item('codex', (entry) => entry.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref, fork: true });
+  const [{ fork, entry }] = store.resolve(SITE, [meta.handle]);
+  const options = { fork, transcript: entry.text, executable: fake, cwd: root, message: 'What next?', context: CONTEXT.slice(0, 1) };
+  const { reply } = await forkCodex({ ...options, forkHome });
+  const observed = JSON.parse(reply);
+  assert.deepEqual(observed.args.slice(0, 2), ['exec', 'fork']);
+  assert.notEqual(observed.args[2], IDS.codexPlain);
   for (const required of ['--ephemeral', '--ignore-user-config', '--ignore-rules', '--strict-config', 'sandbox_mode="read-only"', 'approval_policy="never"', 'mcp_servers={}', 'memories', 'shell_tool']) {
     assert.ok(observed.args.includes(required), `missing ${required}`);
   }
-  assert.equal(observed.args.some((arg) => arg.includes(codex.home) || arg.includes('rollout-')), false, 'the rollout path is never passed to the CLI');
-  assert.deepEqual(JSON.parse(observed.prompt.split('\n\n').at(-1)), { context: CONTEXT.slice(0, 1), message: 'What next?' });
-  assert.equal(observed.cwd.includes('use-my-llm-codex-'), true, 'runs in a throwaway directory');
-  assert.equal(treeHash(codex.home), before, 'the Codex home is byte-for-byte unchanged');
-  assert.deepEqual(readdirSync(root).filter((name) => name.startsWith('use-my-llm-codex-')), []);
-
-  // Text added to the session after approval is refused, not shared.
-  appendFileSync(codex.plain, '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"added later"}]}}\n');
-  await assert.rejects(forkCodex({ fork, executable: fake, cwd: root, message: 'What next?' }), { code: 'CONTEXT_STALE' });
-  rmSync(codex.plain);
-  await assert.rejects(forkCodex({ fork, executable: fake, cwd: root, message: 'What next?' }), { code: 'CONTEXT_STALE' });
-  await assert.rejects(forkCodex({ fork: { ...fork, sessionId: '--dangerously-bypass-approvals-and-sandbox' }, executable: fake, cwd: root, message: 'x' }), { code: 'CONTEXT_UNAVAILABLE' });
-});
-
-test('a touched but otherwise identical Codex session is also treated as changed', { skip: WINDOWS }, async (t) => {
-  const { root, codex, store, item, grant } = setup(t);
-  const fake = executable(root, 'codex-fixture', CODEX_ECHO);
-  const meta = grant({ ref: item('codex', (entry) => entry.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref, fork: true });
-  const [{ fork }] = store.resolve(SITE, [meta.handle]);
-  utimesSync(codex.plain, new Date(), new Date(Date.now() + 60_000));
-  await assert.rejects(forkCodex({ fork, executable: fake, cwd: root, message: 'What next?' }), { code: 'CONTEXT_STALE' });
+  const [metadata, history] = observed.seed.trim().split('\n').map(JSON.parse);
+  assert.equal(metadata.payload.id, observed.args[2]);
+  assert.deepEqual(JSON.parse(history.payload.content[0].text.split('\n\n').at(-1)), {
+    context: [{ source: 'codex:fork', text: entry.text }],
+  });
+  assert.equal(observed.seed.includes(IDS.codexPlain), false);
+  assert.equal(observed.seed.includes(SECRETS.openai), false);
+  assert.equal(treeHash(codex.home), before);
+  assert.equal(readdirSync(forkHome, { recursive: true }).some(name => name.endsWith('.jsonl')), false);
+  await assert.rejects(forkCodex({ ...options, forkHome: 'relative' }), { code: 'CONTEXT_UNAVAILABLE' });
 });
 
 test('a Claude Code session is copied, redacted and continued from bridge-only storage with an API key only', { skip: WINDOWS }, async (t) => {
@@ -144,7 +161,7 @@ test('a Claude Code session is copied, redacted and continued from bridge-only s
 
   // The copy is where `claude --resume` will look for it, under the bridge's own directory.
   assert.equal(fork.configDir.startsWith(join(dataDir, 'context', 'forks')), true);
-  const copyPath = join(fork.configDir, 'projects', claudeProjectName(fork.cwd), `${IDS.claude}.jsonl`);
+  const copyPath = join(fork.configDir, 'projects', claudeProjectName(fork.cwd), `${fork.sessionId}.jsonl`);
   const copy = readFileSync(copyPath, 'utf8');
   assert.equal(statSync(copyPath).mode & 0o777, 0o600);
   assert.equal(copy.includes(SECRETS.github), false, 'secrets are redacted in the copy');
@@ -153,7 +170,8 @@ test('a Claude Code session is copied, redacted and continued from bridge-only s
   }
   const copied = copy.trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(copied.every((line) => line.cwd === undefined || line.cwd === fork.cwd), true, 'rebased onto the bridge-only working directory');
-  assert.equal(copied.some((line) => line.type === 'custom-title'), true);
+  assert.equal(copied.every((line) => ['user', 'assistant'].includes(line.type)), true);
+  assert.equal(copy.includes(IDS.claude), false);
   assert.equal(copy.includes(claude.project), false);
 
   const env = { PATH: process.env.PATH, HOME: join(root, 'home'), ANTHROPIC_API_KEY: 'fixture-api-key', CLAUDE_CODE_OAUTH_TOKEN: 'fixture-subscription-token', ANTHROPIC_AUTH_TOKEN: 'fixture-auth-token', CLAUDE_CODE_USE_BEDROCK: '1' };
@@ -163,7 +181,7 @@ test('a Claude Code session is copied, redacted and continued from bridge-only s
   for (const required of ['--print', '--bare', '--no-session-persistence', '--strict-mcp-config', '--fork-session']) {
     assert.ok(observed.args.includes(required), `missing ${required}`);
   }
-  assert.equal(observed.args[observed.args.indexOf('--resume') + 1], IDS.claude);
+  assert.equal(observed.args[observed.args.indexOf('--resume') + 1], fork.sessionId);
   assert.equal(observed.env.CLAUDE_CONFIG_DIR, fork.configDir);
   assert.equal(observed.env.ANTHROPIC_API_KEY, 'fixture-api-key');
   for (const excluded of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK']) {

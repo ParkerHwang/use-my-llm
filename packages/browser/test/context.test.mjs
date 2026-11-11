@@ -117,8 +117,9 @@ test('bridge refusals for shared context surface with their code and keep the se
 
 test('status() reports context support only when the bridge advertises it', async () => {
   const providers = [{ id: 'codex', available: true }];
-  const v11 = paired(() => json({ service: 'localhost-agent-sdk', version: 1, connected: true, providers, protocol: '1.1', context: true }));
-  assert.deepEqual(await v11.client.status(), { service: 'localhost-agent-sdk', version: 1, connected: true, providers, context: true });
+  const continuation = { id: 'antigravity', available: false, continuationAvailable: true };
+  const v11 = paired(() => json({ service: 'localhost-agent-sdk', version: 1, connected: true, providers: [...providers, continuation], protocol: '1.1', context: true }));
+  assert.deepEqual(await v11.client.status(), { service: 'localhost-agent-sdk', version: 1, connected: true, providers: [...providers, continuation], context: true });
   const v1 = paired(() => json({ service: 'localhost-agent-sdk', version: 1, connected: true, providers }));
   assert.deepEqual(await v1.client.status(), { service: 'localhost-agent-sdk', version: 1, connected: true, providers });
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -61,6 +61,41 @@ test('sources, preview and plan show the selection without sharing anything', as
   assert.equal((await run(['consent'])).out.startsWith('The site can read whatever you share.\n'), true);
   assert.deepEqual(store.origins(), []);
   assert.equal(existsSync(dataDir), false);
+});
+
+test('a native picker approval rejects a changed selection and binds the website', async (t) => {
+  const { run, store } = setup(t);
+  const memory = (await run(['sources', '--app', 'codex', '--json'])).json().items.find((item) => item.kind === 'memory');
+  const plan = (await run(['plan', '--origin', SITE, '--ref', memory.ref, '--json'])).json().plan;
+  const flags = ['--ref', memory.ref, '--yes', '--expect', plan.fingerprint, '--json'];
+  const other = await run(['share', '--origin', 'https://beta.example', ...flags]);
+  assert.equal(other.json().error.code, 'SELECTION_CHANGED');
+  appendFileSync(memory.ref.slice('codex:memory:'.length), '\nChanged after the review.');
+  const changed = await run(['share', '--origin', SITE, ...flags]);
+  assert.equal(changed.json().error.code, 'SELECTION_CHANGED');
+  assert.deepEqual(store.origins(), []);
+  const updated = (await run(['plan', '--origin', SITE, '--ref', memory.ref, '--json'])).json().plan;
+  const approved = await run(['share', '--origin', SITE, '--ref', memory.ref, '--yes', '--expect', updated.fingerprint, '--json']);
+  assert.equal(approved.code, 0);
+  assert.equal(store.list(SITE).length, 1);
+});
+
+test('terminal previews display transcript control characters without interpreting them', async (t) => {
+  const { run } = setup(t);
+  const memory = (await run(['sources', '--app', 'codex', '--json'])).json().items.find((item) => item.kind === 'memory');
+  const unsafe = 'Line\u001b[2J\u202e\n';
+  appendFileSync(memory.ref.slice('codex:memory:'.length), unsafe);
+  const displayed = await run(['plan', '--origin', SITE, '--ref', memory.ref]);
+  assert.ok(displayed.out.includes('Line\\u001b[2J\\u202e\n'));
+  assert.equal(displayed.out.includes(unsafe), false);
+  const machine = await run(['plan', '--origin', SITE, '--ref', memory.ref, '--json']);
+  assert.ok(machine.json().plan.text.includes(unsafe));
+  const interactive = await run(['share', '--origin', SITE, '--ref', memory.ref, '--json'], {
+    interactive: true, answers: ['no'],
+  });
+  assert.equal(interactive.code, 1);
+  assert.ok(interactive.out.includes('Line\\u001b[2J\\u202e\n'));
+  assert.equal(interactive.out.includes(unsafe), false);
 });
 
 test('share needs explicit approval, then grants, lists, logs and revokes', async (t) => {

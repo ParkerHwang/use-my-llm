@@ -53,15 +53,15 @@ export interface LoadedSource {
 
 /** What a reader knows about a forkable session before the user approves anything. */
 export type ForkSeed =
-  | { provider: 'codex'; sessionId: string; path: string }
-  | { provider: 'claude'; sessionId: string; path: string }
-  | { provider: 'antigravity'; sessionId: string };
+  | { provider: 'codex' }
+  | { provider: 'claude' }
+  | { provider: 'antigravity' };
 
 /** Private fork details kept with a grant. Never sent to a website. */
 export type ForkRecord =
-  | { provider: 'codex'; sessionId: string; path: string; size: number; mtimeMs: number }
+  | { provider: 'codex' }
   | { provider: 'claude'; sessionId: string; configDir: string; cwd: string }
-  | { provider: 'antigravity'; sessionId: string };
+  | { provider: 'antigravity' };
 
 /** The only context shape a provider adapter receives. */
 export interface ContextEntry {

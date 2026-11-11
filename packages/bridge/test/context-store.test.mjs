@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -161,6 +161,28 @@ test('revoking a website deletes its snapshots and conversation copies together'
   assert.deepEqual(store.origins().map(({ origin }) => origin), [SITE_B]);
 });
 
+test('approving one item cannot reactivate paused shares', (t) => {
+  const { store, locations, refs } = setup(t);
+  const [first, second] = refs('codex').filter((item) => item.kind === 'memory');
+  const { meta } = share({ origin: SITE_A, ref: first.ref }, { locations, store });
+  assert.equal(store.setEnabled(SITE_A, false), true);
+  assert.throws(() => share({ origin: SITE_A, ref: second.ref }, { locations, store }), { code: 'SHARING_DISABLED' });
+  assert.throws(() => store.resolve(SITE_A, [meta.handle]), { code: 'CONTEXT_DENIED' });
+  assert.equal(store.origins()[0].snapshots.length, 1);
+});
+
+test('excerpt redaction detects a three-line environment block at the start of a message', (t) => {
+  const { store, locations, codex, refs } = setup(t);
+  appendFileSync(codex.plain, '\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user',
+    content: [{ type: 'input_text', text: 'AAA=synthetic1\nBBB=synthetic2\nCCC=synthetic3' }],
+  } }) + '\n');
+  const ref = refs('codex').find((item) => item.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref;
+  const { meta } = share({ origin: SITE_A, ref, from: 5 }, { locations, store });
+  const [resolved] = store.resolve(SITE_A, [meta.handle]);
+  assert.equal(meta.redactions, 3);
+  assert.equal(resolved.entry.text, 'User: AAA=[REDACTED:env]\nBBB=[REDACTED:env]\nCCC=[REDACTED:env]');
+});
+
 test('the access log holds only timestamp, origin, provider, snapshot and byte count', (t) => {
   const { store, locations, refs, dataDir } = setup(t);
   const { meta } = share({ origin: SITE_A, ref: refs('codex').find((item) => item.kind === 'memory').ref }, { locations, store });
@@ -188,8 +210,8 @@ test('selections that are empty, out of range or too large are refused before an
   const blank = join(locations.codexHome, 'memories', 'blank.md');
   writeFileSync(blank, '  \n');
   assert.throws(() => share({ origin: SITE_A, ref: `codex:memory:${blank}` }, { locations, store }), { code: 'EMPTY_SELECTION' });
-  // An export conversation has no provider that could continue it.
-  assert.throws(() => share({ origin: SITE_A, ref: refs('antigravity').find((item) => item.kind === 'session').ref, fork: true }, { locations, store }), { code: 'NOT_FORKABLE' });
+  // A live ACP reference has no frozen transcript that the user can review.
+  assert.throws(() => share({ origin: SITE_A, ref: 'antigravity:acp:fixture-session', fork: true }, { locations, store }), { code: 'NOT_FORKABLE' });
   assert.equal(existsSync(join(dataDir, 'context', 'snapshots')), false);
   assert.ok(root);
 });

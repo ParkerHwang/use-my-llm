@@ -5,11 +5,11 @@
  * exactly what would be stored. `share` is the single place where selected
  * text leaves an app's own files, and it runs only after explicit approval.
  */
-import { prepareClaudeFork, prepareCodexFork } from './fork.mjs';
+import { prepareClaudeFork } from './fork.mjs';
 import { redactSecrets } from './redact.mjs';
 import { loadSource, type SourceLocations } from './sources/index.mjs';
 import { renderMessages } from './sources/util.mjs';
-import type { ContextStore, SnapshotMeta } from './store.mjs';
+import { sha256, type ContextStore, type SnapshotMeta } from './store.mjs';
 import {
   ContextError, MAX_SNAPSHOT_BYTES,
   type ForkProvider, type ForkSeed, type SnapshotKind, type SourceApp, type SourceItem, type SourceMessage,
@@ -49,7 +49,7 @@ export interface SharePlan {
   kind: SnapshotKind;
   /** What the website will see. Never a thread name, session id or path. */
   label: string;
-  /** Redacted text that would be stored. Empty for a continuable copy. */
+  /** Redacted text that would be stored. */
   text: string;
   bytes: number;
   redactions: number;
@@ -65,6 +65,7 @@ export interface SharePlan {
 interface Prepared {
   plan: SharePlan;
   seed?: ForkSeed;
+  messages?: SourceMessage[];
 }
 
 function cleanLabel(label: string | undefined, fallback: string): string {
@@ -81,26 +82,22 @@ function range(messages: readonly SourceMessage[], from: number | undefined, to:
   return [first, last];
 }
 
+function redactMessages(messages: readonly SourceMessage[]) {
+  const kinds = new Set<string>();
+  let count = 0;
+  const redacted = messages.map((message) => {
+    const result = redactSecrets(message.text);
+    count += result.count;
+    for (const kind of result.kinds) kinds.add(kind);
+    return { ...message, text: result.text };
+  });
+  return { messages: redacted, text: renderMessages(redacted), count, kinds: [...kinds].sort() };
+}
+
 function prepare(options: ShareOptions, locations: SourceLocations): Prepared {
   if (options.ref.startsWith(ACP_REF)) {
-    // Listed through ACP: there is no local text, only a conversation to continue.
-    const sessionId = options.ref.slice(ACP_REF.length);
-    if (!options.fork || !sessionId || sessionId.length > 1024) {
-      throw new ContextError('INVALID_REFERENCE', 'An ACP conversation can only be shared as a continuable copy.');
-    }
-    const item: SourceItem = {
-      ref: options.ref, app: 'antigravity', kind: 'session', project: 'ACP', title: 'Antigravity conversation',
-      date: null, firstPrompt: '', preview: '', forkProvider: 'antigravity',
-    };
-    return {
-      plan: {
-        app: 'antigravity', kind: 'fork', label: cleanLabel(options.label, 'Antigravity conversation (continue)'),
-        text: '', bytes: 0, redactions: 0, redactionKinds: [], provider: 'antigravity', item,
-      },
-      seed: { provider: 'antigravity', sessionId },
-    };
+    throw new ContextError('NOT_FORKABLE', 'Live ACP sessions cannot be shared. Choose a local transcript to share a frozen copy.');
   }
-
   const loaded = loadSource(options.ref, locations);
   const { item } = loaded;
   const name = APP_NAMES[item.app];
@@ -108,33 +105,41 @@ function prepare(options: ShareOptions, locations: SourceLocations): Prepared {
     if (!loaded.fork || !loaded.messages?.length) {
       throw new ContextError('NOT_FORKABLE', 'This item cannot be continued as a copy.');
     }
+    if (options.from !== undefined || options.to !== undefined) {
+      throw new ContextError('INVALID_RANGE', 'A conversation copy includes the whole conversation.');
+    }
+    const { messages, text, count, kinds } = redactMessages(loaded.messages);
+    const bytes = Buffer.byteLength(text);
+    if (bytes > MAX_SNAPSHOT_BYTES) {
+      throw new ContextError('SELECTION_TOO_LARGE', 'This conversation is too large to copy. Share a message range instead.');
+    }
     return {
       plan: {
         app: item.app, kind: 'fork', label: cleanLabel(options.label, `${name} conversation (continue as a copy)`),
-        text: '', bytes: 0, redactions: 0, redactionKinds: [], messageCount: loaded.messages.length,
+        text, bytes, redactions: count, redactionKinds: kinds, messageCount: messages.length,
         provider: loaded.fork.provider, item,
       },
       seed: loaded.fork,
+      messages,
     };
   }
 
-  let raw: string;
+  let redacted: ReturnType<typeof redactSecrets>;
   let kind: SnapshotKind;
   let fallback: string;
   let selection: Pick<SharePlan, 'messageCount' | 'from' | 'to'> = {};
   if (loaded.messages) {
     if (!loaded.messages.length) throw new ContextError('EMPTY_SELECTION', 'This conversation has no readable messages.');
     const [first, last] = range(loaded.messages, options.from, options.to);
-    raw = renderMessages(loaded.messages.slice(first - 1, last));
+    redacted = redactMessages(loaded.messages.slice(first - 1, last));
     kind = 'messages';
     selection = { messageCount: last - first + 1, from: first, to: last };
     fallback = `${name} conversation excerpt (${selection.messageCount} message${selection.messageCount === 1 ? '' : 's'})`;
   } else {
-    raw = loaded.text ?? '';
+    redacted = redactSecrets(loaded.text ?? '');
     kind = item.kind === 'session' ? 'messages' : item.kind;
     fallback = `${name} ${kind === 'messages' ? 'conversation summary' : kind}`;
   }
-  const redacted = redactSecrets(raw);
   const bytes = Buffer.byteLength(redacted.text);
   if (!redacted.text.trim()) throw new ContextError('EMPTY_SELECTION', 'The selection is empty.');
   if (bytes > MAX_SNAPSHOT_BYTES) {
@@ -153,12 +158,20 @@ export function planShare(options: ShareOptions, locations: SourceLocations): Sh
   return prepare(options, locations).plan;
 }
 
+/** Binds approval to the target and the text shown in the review. */
+export function shareFingerprint(options: ShareOptions, plan: SharePlan): string {
+  return sha256(JSON.stringify([options.origin, options.ref, plan.kind, plan.label, plan.text]));
+}
+
 /** Store the approved selection for one website. Call only after explicit approval. */
 export function share(
   options: ShareOptions,
-  { locations, store }: { locations: SourceLocations; store: ContextStore },
+  { locations, store, expected }: { locations: SourceLocations; store: ContextStore; expected?: string },
 ): { meta: SnapshotMeta; plan: SharePlan } {
-  const { plan, seed } = prepare(options, locations);
+  const { plan, seed, messages } = prepare(options, locations);
+  if (expected !== undefined && shareFingerprint(options, plan) !== expected) {
+    throw new ContextError('SELECTION_CHANGED', 'The selection changed. Review it again before sharing.');
+  }
   const meta = store.grant(options.origin, {
     app: plan.app,
     kind: plan.kind,
@@ -166,11 +179,9 @@ export function share(
     text: plan.text,
     redactions: plan.redactions,
     ...(seed && {
-      prepareFork: (directory: string) => {
-        if (seed.provider === 'codex') return prepareCodexFork(seed);
-        if (seed.provider === 'claude') return prepareClaudeFork(seed.path, seed.sessionId, directory);
-        return { record: { provider: 'antigravity' as const, sessionId: seed.sessionId } };
-      },
+      prepareFork: (directory: string) => seed.provider === 'claude'
+        ? prepareClaudeFork(messages ?? [], directory)
+        : { record: seed },
     }),
   });
   return { meta, plan };

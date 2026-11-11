@@ -79,6 +79,8 @@ export type PairingResult =
 export interface ProviderStatus {
   id: ProviderId;
   available: boolean;
+  /** The bridge supports a locally enabled continuation-only route. */
+  continuationAvailable?: true;
 }
 
 export interface BridgeStatus {
@@ -730,7 +732,10 @@ export function createClient(options: ClientOptions = {}): UseMyLlmClient {
     const providers: ProviderStatus[] = [];
     for (const entry of payload.providers as unknown[]) {
       if (isRecord(entry) && isProvider(entry.id) && typeof entry.available === 'boolean') {
-        providers.push({ id: entry.id, available: entry.available });
+        providers.push({
+          id: entry.id, available: entry.available,
+          ...(entry.continuationAvailable === true && { continuationAvailable: true as const }),
+        });
       }
     }
     return {

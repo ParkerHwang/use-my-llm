@@ -2,16 +2,15 @@
 //
 // These are skipped unless USE_MY_LLM_REAL_CLI=1, because they start real
 // binaries and reach the providers' servers. Each test says what it needs.
-// They only ever read made-up fixtures, except the last two Codex tests,
-// which need a real login and are enabled separately.
+// They only ever read made-up fixtures, including in tests that require a real login.
 //
 //   USE_MY_LLM_REAL_CLI=1                      real binaries, made-up data, no login needed
 //   USE_MY_LLM_REAL_CODEX_LOGIN=1              also send one real Codex request (uses your Codex allowance)
-//   USE_MY_LLM_REAL_CODEX_FORK=<session-id>    also continue one of your own Codex sessions as an ephemeral copy
+//   LOCALHOSTAGENT_CODEX_FORK_HOME=/path      optionally test a separate, already signed-in Codex home
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -56,34 +55,22 @@ function sessionFiles(home) {
   return { digest: hash.update(names.sort().join('\n')).digest('hex'), count: names.length };
 }
 
-function withEnvironment(t, values) {
-  const previous = {};
-  for (const [key, value] of Object.entries(values)) {
-    previous[key] = process.env[key];
-    process.env[key] = value;
-  }
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-}
-
 test('real Codex CLI: fork loads a made-up session, accepts every restriction, and leaves session files unchanged',
   { skip: !ENABLED ? off : !codex ? 'the Codex CLI is not installed' : false, timeout: 180_000 }, async (t) => {
     const { root, codex: fixture, store, item, grant } = setup(t);
     // A home with no login: the CLI must get as far as the provider and be refused there.
-    withEnvironment(t, { CODEX_HOME: fixture.home });
+    const forkHome = join(root, 'fork-home');
+    mkdirSync(forkHome);
     const meta = grant({ ref: item('codex', (entry) => entry.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref, fork: true });
-    const [{ fork }] = store.resolve(SITE, [meta.handle]);
+    const [{ fork, entry }] = store.resolve(SITE, [meta.handle]);
     const before = sessionFiles(fixture.home);
-    await assert.rejects(forkCodex({ fork, executable: codex, cwd: root, message: 'Reply with the single word: ok' }), (error) => {
+    await assert.rejects(forkCodex({ fork, transcript: entry.text, forkHome, executable: codex, cwd: root, message: 'Reply with the single word: ok' }), (error) => {
       // CODEX_UNSUPPORTED would mean a rejected flag; CODEX_FAILED would mean the session did not load.
       assert.equal(error.code, 'LOGIN_REQUIRED', `unexpected ${error.code}`);
       return true;
     });
     assert.deepEqual(sessionFiles(fixture.home), before, 'no rollout was added or changed');
+    assert.equal(readdirSync(join(forkHome, 'sessions'), { recursive: true }).some(name => name.endsWith('.jsonl')), false);
   });
 
 test('real Codex CLI with your login: shared context is used in a reply',
@@ -99,25 +86,18 @@ test('real Codex CLI with your login: shared context is used in a reply',
     assert.deepEqual(sessionFiles(join(homedir(), '.codex')), before, 'an ephemeral turn adds no session file');
   });
 
-test('real Codex CLI with your login: one of your sessions is continued as a copy and no session file changes',
-  { skip: !ENABLED ? off : !codex ? 'the Codex CLI is not installed' : !process.env.USE_MY_LLM_REAL_CODEX_FORK ? 'needs a Codex login and a session id in USE_MY_LLM_REAL_CODEX_FORK' : false, timeout: 300_000 }, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), 'use-my-llm-real-fork-'));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const home = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-    const locations = { codexHome: home, claudeHome: join(root, 'none'), claude3pDir: join(root, 'none'), geminiDir: join(root, 'none'), dataDir: join(root, 'data') };
-    const store = createContextStore({ dataDir: locations.dataDir });
-    const session = listSources(locations, { apps: ['codex'], detailLimit: 0, limit: 5000 }).items
-      .find((entry) => entry.kind === 'session' && entry.ref.includes(process.env.USE_MY_LLM_REAL_CODEX_FORK));
-    assert.ok(session, 'the session id was not found under the Codex home');
-    const { meta } = share({ origin: SITE, ref: session.ref, fork: true }, { locations, store });
-    const [{ fork }] = store.resolve(SITE, [meta.handle]);
-    const before = sessionFiles(home);
-    const { reply } = await forkCodex({ fork, executable: codex, cwd: root, message: 'Reply with exactly this text and nothing else: FORK_OK' });
+test('real Codex CLI with a separate login: a synthetic conversation is continued as a copy',
+  { skip: !ENABLED ? off : !codex ? 'the Codex CLI is not installed' : process.env.USE_MY_LLM_REAL_CODEX_LOGIN !== '1' || !process.env.LOCALHOSTAGENT_CODEX_FORK_HOME ? 'needs opt-in and a separate signed-in LOCALHOSTAGENT_CODEX_FORK_HOME' : false, timeout: 240_000 }, async (t) => {
+    const { root, codex: fixture, store, item, grant } = setup(t);
+    const meta = grant({ ref: item('codex', (entry) => entry.ref.endsWith(`${IDS.codexPlain}.jsonl`)).ref, fork: true });
+    const [{ fork, entry }] = store.resolve(SITE, [meta.handle]);
+    const before = sessionFiles(fixture.home);
+    const { reply } = await forkCodex({
+      fork, transcript: entry.text, executable: codex, cwd: root,
+      message: 'Reply with exactly this text and nothing else: FORK_OK',
+    });
     assert.match(reply, /FORK_OK/);
-    // Only the outcome is reported. The reply text of a real conversation is never printed.
-    const after = sessionFiles(home);
-    assert.equal(after.count, before.count, 'no session file was added or removed');
-    assert.equal(after.digest, before.digest, 'every session file has the same content');
+    assert.deepEqual(sessionFiles(fixture.home), before);
   });
 
 test('real Claude Code CLI: the bridge-only copy is found by --resume --fork-session, and only an API key is tried',

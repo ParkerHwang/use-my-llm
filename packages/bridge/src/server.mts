@@ -46,6 +46,7 @@ export interface ProviderRequest {
   context?: ContextEntry[];
   /** Private details of a user-approved session copy to continue. */
   fork?: ForkRecord;
+  forkTranscript?: string;
   signal: AbortSignal;
 }
 
@@ -64,6 +65,8 @@ export interface ProviderReply {
 export interface ProviderStatus {
   id: ProviderId;
   available: boolean;
+  /** Continuation is offered even when ordinary inference is unavailable. */
+  continuationAvailable?: true;
 }
 
 export interface BridgeOptions {
@@ -121,7 +124,7 @@ const PROVIDER_ERRORS = new Map<string, readonly [number, string]>([
   ["PROVIDER_OUTPUT_LIMIT", [502, "The provider returned too much output."]],
   ["PROVIDER_ABORTED", [409, "The request was canceled."]],
   ["INVALID_REQUEST", [400, "The request is invalid."]],
-  ["CONTEXT_STALE", [409, "The shared conversation changed after it was shared. Share it again from the local bridge."]],
+  ["CONTEXT_TOO_LARGE", [413, "The selected context is too large for this provider."]],
   ["CONTEXT_UNAVAILABLE", [503, "This shared conversation cannot be continued with the current local configuration."]],
   ["PROVIDER_TOOL_ACTIVITY", [502, "The provider attempted tool activity, so the reply was discarded."]],
 ]);
@@ -428,6 +431,7 @@ export function createBridge({
     return PROVIDERS.map((id) => ({
       id,
       available: list.some((item) => item?.id === id && item.available === true),
+      ...(list.some((item) => item?.id === id && item.continuationAvailable === true) && { continuationAvailable: true as const }),
     }));
   }
 
@@ -491,7 +495,7 @@ export function createBridge({
    * origin. A handle that is unknown, revoked or owned by another website is
    * refused with one indistinguishable error.
    */
-  function resolveContext(request: ChatRequest, origin: string): { used: ResolvedContext[]; entries: ContextEntry[]; fork?: ForkRecord } {
+  function resolveContext(request: ChatRequest, origin: string): { used: ResolvedContext[]; entries: ContextEntry[]; fork?: ForkRecord; forkTranscript?: string } {
     const handles = request.continueHandle ? [...request.context, request.continueHandle] : request.context;
     if (!handles.length) return { used: [], entries: [] };
     if (!contextAccess) throw new RequestError(403, "CONTEXT_DENIED", "This context is not shared with this website.");
@@ -515,7 +519,7 @@ export function createBridge({
     return {
       used,
       entries: attached.map((item) => item.entry),
-      ...(continued?.fork && { fork: continued.fork }),
+      ...(continued?.fork && { fork: continued.fork, forkTranscript: continued.entry.text }),
     };
   }
 
@@ -530,7 +534,8 @@ export function createBridge({
     if (session.active || executions.size >= MAX_ACTIVE) {
       return fail(res, 409, "BUSY", "Wait for an active request to finish.");
     }
-    if (!providers().find(({ id }) => id === request.provider)?.available) {
+    const provider = providers().find(({ id }) => id === request.provider);
+    if (!(provider?.available || (request.continueHandle && provider?.continuationAvailable))) {
       return fail(res, 503, "PROVIDER_UNAVAILABLE", "This provider is unavailable.");
     }
     const shared = resolveContext(request, session.origin);
@@ -566,7 +571,7 @@ export function createBridge({
           message: request.message,
           history: request.history,
           ...(shared.entries.length && { context: shared.entries }),
-          ...(shared.fork && { fork: shared.fork }),
+          ...(shared.fork && { fork: shared.fork, forkTranscript: shared.forkTranscript }),
           signal: controller.signal,
         });
       })
@@ -593,6 +598,7 @@ export function createBridge({
         return fail(res, 401, "UNAUTHORIZED", "Connect this website again.");
       }
       if (!authenticate(req, origin)) return fail(res, 401, "UNAUTHORIZED", "Connect this website again.");
+      if (shared.used.length) resolveContext(request, session.origin);
       if (outcome.kind === "error") {
         const error = outcome.error;
         if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {

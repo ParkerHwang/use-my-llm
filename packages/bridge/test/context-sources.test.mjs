@@ -54,7 +54,7 @@ test('Codex rollouts yield only what the user and assistant wrote', (t) => {
   for (const hidden of ['developer instructions', 'environment_context', 'fixture tool output', 'fixture-opaque', 'base instructions']) {
     assert.equal(everything.includes(hidden), false, hidden);
   }
-  assert.deepEqual(loaded.fork, { provider: 'codex', sessionId: IDS.codexPlain, path: loaded.fork.path });
+  assert.deepEqual(loaded.fork, { provider: 'codex' });
   assert.equal(fingerprint(codex.home), before, 'reading must not change the Codex home');
 });
 
@@ -105,7 +105,7 @@ test('Claude Code sessions skip tools, thinking, sidechains, meta and local comm
     `user: Here is the registry token ${SECRETS.github}`,
     'assistant: Do not paste tokens into chat.',
   ]);
-  assert.deepEqual(loaded.fork, { provider: 'claude', sessionId: IDS.claude, path: loaded.fork.path });
+  assert.deepEqual(loaded.fork, { provider: 'claude' });
   assert.deepEqual(items.filter((item) => item.kind === 'memory').map((item) => item.title), ['MEMORY.md', 'layout.md']);
   assert.deepEqual(items.filter((item) => item.kind === 'instructions').map((item) => item.project).sort(), ['Global', claude.project].sort());
   assert.throws(() => loadSource(`claude-code:memory:${join(claude.home, '.credentials.json')}`, locations));
@@ -199,7 +199,8 @@ test('Antigravity knowledge and brain artifacts load from both app directories a
     'user: Plan a tram route from the museum to the harbour.',
     'assistant: Take line 4 and change at Market Square.',
   ]);
-  assert.equal(items.every((item) => item.forkProvider === undefined), true, 'local files alone never make a conversation continuable');
+  assert.equal(items.filter((item) => item.kind === 'session').every((item) => item.forkProvider === 'antigravity'), true);
+  assert.equal(items.filter((item) => item.kind === 'knowledge').every((item) => item.forkProvider === undefined), true);
   assert.throws(() => loadSource(`antigravity:artifact:${join(antigravity.gemini, 'antigravity', 'brain', 'fixture-brain-1', '.system_generated', 'hidden.md')}`, locations));
   assert.throws(() => loadSource(`antigravity:brain:${join(antigravity.gemini, 'antigravity', 'conversations', 'fixture.db')}`, locations));
   assert.equal(fingerprint(antigravity.gemini), before);

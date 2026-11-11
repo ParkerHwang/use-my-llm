@@ -7,11 +7,7 @@
  *   forks/<originKey>/<id>/           bridge-only material for a continued copy
  *   access.jsonl                      timestamp, origin, provider, snapshot, bytes
  *
- * A text snapshot keeps no reference to the file it was taken from, and
- * nothing here re-reads an original after approval. The one recorded path is
- * a Codex session shared as a continuable copy: the Codex CLI resolves that
- * session by id, and the adapter compares only its size and modification
- * time so later additions are refused rather than shared.
+ * A snapshot keeps no reference to the original file.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import {
@@ -255,8 +251,9 @@ export function createContextStore({
       }));
       update((grants) => {
         const entry = grants.origins[origin] ?? { enabled: true, snapshots: [] };
-        // Sharing something with a site is the explicit opt-in for that site.
-        entry.enabled = true;
+        if (!entry.enabled) {
+          throw new ContextError('SHARING_DISABLED', 'Sharing for this website is paused. Enable or revoke its existing shares first.');
+        }
         entry.snapshots.push(meta);
         grants.origins[origin] = entry;
       });
@@ -332,32 +329,33 @@ export function createContextStore({
     });
   }
 
+  function deleteCopy(origin: string, id: string): void {
+    // If deleting the fork fails, the missing snapshot already denies use.
+    // Keeping metadata until both deletions succeed lets a retry finish cleanup.
+    rmSync(join(snapshotDir(origin), `${id}.json`), { force: true });
+    rmSync(join(forkDir(origin), id), { recursive: true, force: true });
+  }
+
   function revokeSnapshot(origin: string, id: string): boolean {
     if (!ID_PATTERN.test(id)) return false;
-    const removed = update((grants) => {
+    return update((grants) => {
       const entry = grants.origins[origin];
       const index = entry?.snapshots.findIndex((item) => item.id === id) ?? -1;
       if (!entry || index === -1) return false;
+      deleteCopy(origin, id);
       entry.snapshots.splice(index, 1);
       return true;
     });
-    if (removed) {
-      rmSync(join(snapshotDir(origin), `${id}.json`), { force: true });
-      rmSync(join(forkDir(origin), id), { recursive: true, force: true });
-    }
-    return removed;
   }
 
   function revokeOrigin(origin: string): boolean {
-    const removed = update((grants) => {
-      if (!grants.origins[origin]) return false;
+    return update((grants) => {
+      const entry = grants.origins[origin];
+      if (!entry) return false;
+      for (const { id } of entry.snapshots) deleteCopy(origin, id);
       delete grants.origins[origin];
       return true;
     });
-    // Remove the files even when the record was already gone.
-    rmSync(snapshotDir(origin), { recursive: true, force: true });
-    rmSync(forkDir(origin), { recursive: true, force: true });
-    return removed;
   }
 
   function logAccess(entry: Omit<AccessLogEntry, 'ts'>): void {

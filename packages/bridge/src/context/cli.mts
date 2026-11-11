@@ -11,7 +11,7 @@ import { isAbsolute, join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline/promises';
 import { agyAcpAvailable, findAgy, listAntigravityAcpSessions, spawnAgyAcp } from '../providers/antigravity.mjs';
 import { parseOrigin } from '../server.mjs';
-import { CONSENT_LINES, planShare, share, type ShareOptions, type SharePlan } from './service.mjs';
+import { CONSENT_LINES, planShare, share, shareFingerprint, type ShareOptions, type SharePlan } from './service.mjs';
 import { importClaudeExport } from './sources/claude-desktop.mjs';
 import { defaultLocations, listSources, loadSource, type SourceLocations } from './sources/index.mjs';
 import { clip } from './sources/util.mjs';
@@ -25,7 +25,7 @@ Usage:
   use-my-llm context sources [--app APP] [--limit N] [--antigravity-acp] [--json]
   use-my-llm context preview --ref REF [--json]
   use-my-llm context plan  --origin ORIGIN --ref REF [--from N] [--to N] [--fork] [--label TEXT] [--json]
-  use-my-llm context share --origin ORIGIN --ref REF [--from N] [--to N] [--fork] [--label TEXT] --yes [--json]
+  use-my-llm context share --origin ORIGIN --ref REF [--from N] [--to N] [--fork] [--label TEXT] --yes [--expect HASH] [--json]
   use-my-llm context grants [--json]
   use-my-llm context revoke --origin ORIGIN [--snapshot ID] [--json]
   use-my-llm context enable|disable --origin ORIGIN
@@ -50,7 +50,7 @@ interface Flags {
   switches: Set<string>;
 }
 
-const VALUE_FLAGS = new Set(['app', 'limit', 'ref', 'origin', 'from', 'to', 'label', 'snapshot', 'file']);
+const VALUE_FLAGS = new Set(['app', 'limit', 'ref', 'origin', 'from', 'to', 'label', 'snapshot', 'file', 'expect']);
 const SWITCH_FLAGS = new Set(['json', 'fork', 'yes', 'antigravity-acp']);
 
 function usage(message: string): ContextError {
@@ -108,10 +108,10 @@ function shareOptions(flags: Flags): ShareOptions {
 }
 
 /** What the picker shows for a plan. The redacted text is included so it can be reviewed. */
-function planView(plan: SharePlan) {
+function planView(options: ShareOptions, plan: SharePlan) {
   return {
     app: plan.app, kind: plan.kind, label: plan.label, bytes: plan.bytes, redactions: plan.redactions,
-    redactionKinds: plan.redactionKinds, messageCount: plan.messageCount ?? null,
+    redactionKinds: plan.redactionKinds, fingerprint: shareFingerprint(options, plan), messageCount: plan.messageCount ?? null,
     from: plan.from ?? null, to: plan.to ?? null, provider: plan.provider ?? null, text: plan.text,
   };
 }
@@ -128,7 +128,7 @@ async function acpItems(io: Io): Promise<SourceItem[]> {
     return sessions.map((session) => ({
       ref: `antigravity:acp:${session.sessionId}`, app: 'antigravity' as const, kind: 'session' as const,
       project: session.cwd || 'ACP', title: session.title || 'Antigravity conversation', date: session.updatedAt,
-      firstPrompt: '', preview: 'Continue through ACP. No local text is copied.', forkProvider: 'antigravity' as const,
+      firstPrompt: '', preview: 'Live ACP session. Choose a local transcript to share a frozen copy.',
     }));
   } catch {
     io.err('Antigravity did not return a conversation list through ACP.\n');
@@ -207,7 +207,11 @@ async function pick(flags: Flags, locations: SourceLocations, store: ContextStor
   const appIndex = await choose(ask, io, 'Which app?', SOURCE_APPS);
   if (appIndex === null) return 1;
   flags.values.set('app', SOURCE_APPS[appIndex]);
-  const items = await sources(flags, locations, io);
+  const listed = await sources(flags, locations, io);
+  const items = listed.filter((item) => !item.ref.startsWith('antigravity:acp:'));
+  if (items.length !== listed.length) {
+    io.out(`ACP lists ${listed.length - items.length} live conversation(s). Only frozen local transcripts can be shared.\n`);
+  }
   if (!items.length) {
     io.out('Nothing to share was found for this app.\n');
     return 1;
@@ -221,9 +225,7 @@ async function pick(flags: Flags, locations: SourceLocations, store: ContextStor
   const item = inProject[itemIndex];
 
   const options: ShareOptions = { origin, ref: item.ref };
-  const isAcp = item.ref.startsWith('antigravity:acp:');
-  const loaded = isAcp ? undefined : loadSource(item.ref, locations);
-  if (isAcp) options.fork = true;
+  const loaded = loadSource(item.ref, locations);
   if (loaded?.messages) {
     io.out(`\n${loaded.messages.length} messages:\n`);
     loaded.messages.forEach((message, index) => io.out(`  ${String(index + 1).padStart(3)}. ${message.role.padEnd(9)} ${clip(message.text, 90)}\n`));
@@ -249,18 +251,28 @@ async function pick(flags: Flags, locations: SourceLocations, store: ContextStor
     if (plan.provider === 'claude') {
       io.out('  Continuing uses your ANTHROPIC_API_KEY only. A Claude subscription login is never used.\n');
     }
-  } else {
+    if (plan.provider === 'antigravity') {
+      io.out('  Continuing needs the experimental ACP opt-in. Antigravity can run its own tools and may retain the new session.\n');
+    }
+  }
+  if (plan.text) {
     io.out(`  ${plan.bytes} bytes${plan.redactions ? `, ${plan.redactions} secret-like value${plan.redactions === 1 ? '' : 's'} redacted` : ''}\n\n`);
-    io.out(`${plan.text.length > 1500 ? `${plan.text.slice(0, 1500)}\n… (${plan.text.length - 1500} more characters)` : plan.text}\n`);
+    io.out(`${plan.text}\n`);
   }
   io.out(`\n${CONSENT_LINES.map((line) => `  • ${line}`).join('\n')}\n\n`);
   if ((await ask('Type "yes" to share: ')).trim().toLowerCase() !== 'yes') {
     io.out('Nothing was shared.\n');
     return 1;
   }
-  const { meta } = share(options, { locations, store });
+  const { meta } = share(options, { locations, store, expected: shareFingerprint(options, plan) });
   io.out(`Shared. Revoke any time with: use-my-llm context revoke --origin ${origin}\n(snapshot ${meta.id})\n`);
   return 0;
+}
+
+/** A local transcript can contain terminal escapes or directional controls. */
+function terminalText(value: string): string {
+  return value.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** Run one `context` subcommand. Returns the process exit code. */
@@ -272,31 +284,38 @@ export async function runContextCommand(
 ): Promise<number> {
   let reader: Interface | undefined;
   const interactive = output?.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  const io: Io = {
-    out: output?.out ?? ((text) => { process.stdout.write(text); }),
-    err: output?.err ?? ((text) => { process.stderr.write(text); }),
-    interactive,
-    ask: output?.ask ?? (interactive
-      ? (question) => (reader ??= createInterface({ input: process.stdin, output: process.stdout })).question(question)
-      : undefined),
-  };
   const [command, ...rest] = argv;
+  const stdout = output?.out ?? ((text: string) => { process.stdout.write(text); });
+  const stderr = output?.err ?? ((text: string) => { process.stderr.write(text); });
+  const ask = output?.ask ?? (interactive
+    ? (question: string) => (reader ??= createInterface({ input: process.stdin, output: process.stdout })).question(question)
+    : undefined);
+  const io: Io = {
+    out: (text) => stdout(terminalText(text)),
+    err: (text) => stderr(terminalText(text)),
+    interactive,
+    ask: ask && ((question) => ask(terminalText(question))),
+  };
+  let json = false;
   try {
     if (!command || command === 'help' || command === '--help' || command === '-h') {
       io.out(CONTEXT_HELP);
       return 0;
     }
     const flags = parseFlags(rest);
-    const json = flags.switches.has('json');
-    const print = (value: unknown, text: () => string) => io.out(json ? `${JSON.stringify(value)}\n` : text());
+    json = flags.switches.has('json');
+    const print = (value: unknown, text: () => string) => json ? stdout(`${JSON.stringify(value)}\n`) : io.out(text());
 
     if (command === 'pick') return await pick(flags, locations, store, io);
 
     if (command === 'consent') {
       print({ lines: CONSENT_LINES }, () => `${CONSENT_LINES.join('\n')}\n`);
     } else if (command === 'sources') {
-      const items = await sources(flags, locations, io);
-      print({ items }, () => items.length
+      const warnings: string[] = [];
+      const items = await sources(flags, locations, {
+        ...io, err: (warning) => { warnings.push(warning.trim()); io.err(warning); },
+      });
+      print({ items, warnings }, () => items.length
         ? `${items.map((item) => `${item.app.padEnd(15)} ${describe(item)}\n    ${item.ref}`).join('\n')}\n`
         : 'Nothing to share was found.\n');
     } else if (command === 'preview') {
@@ -311,21 +330,24 @@ export async function runContextCommand(
         ? `${loaded.messages.map((message, index) => `${String(index + 1).padStart(3)}. ${message.role}: ${clip(message.text, 200)}`).join('\n')}\n`
         : `${loaded.text ?? ''}\n`);
     } else if (command === 'plan') {
-      const plan = planShare(shareOptions(flags), locations);
-      print({ plan: planView(plan), consent: CONSENT_LINES }, () =>
+      const options = shareOptions(flags);
+      const plan = planShare(options, locations);
+      print({ plan: planView(options, plan), consent: CONSENT_LINES }, () =>
         `${plan.label}\n${plan.bytes} bytes, ${plan.redactions} redaction(s)\n\n${plan.text}\n\n${CONSENT_LINES.join('\n')}\n`);
     } else if (command === 'share') {
       const options = shareOptions(flags);
+      let expected = flags.values.get('expect');
       if (!flags.switches.has('yes')) {
         if (!io.interactive || !io.ask) throw usage('Sharing needs explicit approval. Show the consent text, then pass --yes.');
         const plan = planShare(options, locations);
-        io.out(`Share "${plan.label}" (${plan.bytes} bytes) with ${options.origin}?\n${CONSENT_LINES.map((line) => `  • ${line}`).join('\n')}\n`);
+        expected = shareFingerprint(options, plan);
+        io.out(`Share "${plan.label}" (${plan.bytes} bytes) with ${options.origin}?\n\n${plan.text}\n\n${CONSENT_LINES.map((line) => `  • ${line}`).join('\n')}\n`);
         if ((await io.ask('Type "yes" to share: ')).trim().toLowerCase() !== 'yes') {
           io.out('Nothing was shared.\n');
           return 1;
         }
       }
-      const { meta, plan } = share(options, { locations, store });
+      const { meta, plan } = share(options, { locations, store, ...(expected !== undefined && { expected }) });
       print({
         shared: { id: meta.id, origin: options.origin, app: meta.app, kind: meta.kind, label: meta.label, bytes: meta.bytes, redactions: meta.redactions, provider: plan.provider ?? null },
       }, () => `Shared "${meta.label}" with ${options.origin} (snapshot ${meta.id}).\n`);
@@ -366,7 +388,7 @@ export async function runContextCommand(
         : error instanceof Error && ['INVALID_ZIP', 'INVALID_EXPORT'].includes(String((error as { code?: unknown }).code))
           ? error.message
           : 'The request could not be completed.';
-    if (argv.includes('--json')) io.out(`${JSON.stringify({ error: { code: error instanceof ContextError ? error.code : 'FAILED', message } })}\n`);
+    if (json) stdout(`${JSON.stringify({ error: { code: error instanceof ContextError ? error.code : 'FAILED', message } })}\n`);
     else io.err(`${message}\n`);
     return error instanceof ContextError && error.code === 'USAGE' ? 2 : 1;
   } finally {

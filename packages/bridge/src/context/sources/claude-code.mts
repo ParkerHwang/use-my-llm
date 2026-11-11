@@ -161,7 +161,7 @@ export function loadClaudeCode(ref: string, { claudeHome }: ClaudeCodeSourceOpti
       },
       messages: parsed.messages,
       // The file name is the session id that `claude --resume` expects.
-      fork: { provider: 'claude', sessionId: match[1], path },
+      fork: { provider: 'claude' },
     };
   }
   if (kind === 'memory' || kind === 'instructions') {

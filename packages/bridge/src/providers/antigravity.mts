@@ -4,7 +4,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
-const MAX_PROMPT_BYTES = 64 * 1024;
+export const MAX_ACP_PROMPT_BYTES = 64 * 1024;
 const MAX_LINE_BYTES = 256 * 1024;
 const MAX_WIRE_BYTES = 4 * 1024 * 1024;
 const MAX_REPLY_BYTES = 64 * 1024;
@@ -113,7 +113,7 @@ export async function runAntigravityAcp(
     typeof transport.send !== "function" ||
     typeof transport.close !== "function" ||
     typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0") ||
-    typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > MAX_PROMPT_BYTES ||
+    typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > MAX_ACP_PROMPT_BYTES ||
     (signal != null && (typeof signal.aborted !== "boolean" ||
       typeof signal.addEventListener !== "function" ||
       typeof signal.removeEventListener !== "function")) ||

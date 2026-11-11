@@ -224,7 +224,7 @@ export function loadCodex(ref: string, { codexHome }: CodexSourceOptions): Loade
         date: parsed.date, firstPrompt, preview: previewOf(parsed.messages), forkProvider: 'codex',
       },
       messages: parsed.messages,
-      fork: { provider: 'codex', sessionId: id, path },
+      fork: { provider: 'codex' },
     };
   }
   if (kind === 'memory' || kind === 'instructions') {

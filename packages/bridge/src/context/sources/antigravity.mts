@@ -122,7 +122,7 @@ export function listAntigravity({ geminiDir, detailLimit = 40, limit = 300 }: An
         items.push({
           ref: `antigravity:brain:${transcript}`, app: 'antigravity', kind: 'session', project: app,
           title: firstPrompt ? clip(firstPrompt, 80) : 'Antigravity conversation',
-          date: new Date(fileMtime(transcript)).toISOString(), firstPrompt, preview,
+          date: new Date(fileMtime(transcript)).toISOString(), firstPrompt, preview, forkProvider: 'antigravity',
         });
       }
       for (const path of markdownFiles(brain, 2)) {
@@ -149,9 +149,10 @@ export function loadAntigravity(ref: string, { geminiDir }: AntigravitySourceOpt
     return {
       item: {
         ref, app: 'antigravity', kind: 'session', project: '', title: clip(firstPrompt, 80) || 'Antigravity conversation',
-        date: new Date(fileMtime(path)).toISOString(), firstPrompt, preview: previewOf(messages),
+        date: new Date(fileMtime(path)).toISOString(), firstPrompt, preview: previewOf(messages), forkProvider: 'antigravity',
       },
       messages,
+      fork: { provider: 'antigravity' },
     };
   }
   if (kind === 'knowledge' || kind === 'artifact') {

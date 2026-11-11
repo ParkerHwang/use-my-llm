@@ -4,7 +4,7 @@ import { createProviderRegistry } from './providers/index.mjs';
 import { runContextCommand } from './context/cli.mjs';
 import { createContextStore } from './context/store.mjs';
 
-const help = `use-my-llm local bridge\n\nUsage: use-my-llm [--port PORT] [--allow-origin ORIGIN ...] [--enable-claude-api] [--enable-antigravity-api] [--unsafe-enable-antigravity-acp]\n       use-my-llm context <command>   Share local conversations and memory with a website you choose (see "use-my-llm context help")\n\nRun this on the same computer as the browser. Websites must be approved locally.\nOnly local configuration selects providers; websites cannot choose executables or paths.\nClaude API mode requires Anthropic API credentials and may incur API charges.\nAntigravity API mode requires the official Python SDK and a Gemini API key.\nConsumer subscription reuse through third-party websites is not enabled.\n--unsafe-enable-antigravity-acp lets a website continue an Antigravity conversation you shared, through "agy acp".\n  The bridge cannot switch off or contain Antigravity's own tools in that mode. Read SECURITY.md first.\nlocalhost-agent is the same command.\n`;
+const help = `use-my-llm local bridge\n\nUsage: use-my-llm [--port PORT] [--allow-origin ORIGIN ...] [--enable-claude-api] [--enable-antigravity-api] [--unsafe-enable-antigravity-acp]\n       use-my-llm context <command>   Share local conversations and memory with a website you choose (see "use-my-llm context help")\n\nRun this on the same computer as the browser. Websites must be approved locally.\nOnly local configuration selects providers; websites cannot choose executables or paths.\nClaude API mode requires Anthropic API credentials and may incur API charges.\nAntigravity API mode requires the official Python SDK and a Gemini API key.\nConsumer subscription reuse through third-party websites is not enabled.\n--unsafe-enable-antigravity-acp lets a website continue a frozen Antigravity transcript you shared through a new "agy acp" session.\n  The bridge cannot switch off or contain Antigravity's own tools in that mode. Read SECURITY.md first.\nlocalhost-agent is the same command.\n`;
 interface CliConfig {
   port: number;
   allowedOrigins?: string[];
@@ -40,7 +40,7 @@ if (process.argv[2] === 'context') {
   else {
     const {unsafeAntigravityAcp,...config}=parsed.config;
     if (unsafeAntigravityAcp) {
-      process.stderr.write('WARNING: --unsafe-enable-antigravity-acp is on. A website can continue an Antigravity conversation you shared, and the bridge cannot switch off or contain the tools Antigravity runs itself. Share Antigravity conversations only with websites you fully trust.\n');
+      process.stderr.write('WARNING: --unsafe-enable-antigravity-acp is on. A website can continue a frozen Antigravity transcript you shared, and the bridge cannot switch off or contain the tools Antigravity runs itself. Share Antigravity conversations only with websites you fully trust.\n');
     }
     const registry=createProviderRegistry({enableClaudeApi:config.enableClaudeApi,enableAntigravityApi:config.enableAntigravityApi,unsafeAntigravityAcp});
     // Sharing is off for every website until the user grants something locally.
