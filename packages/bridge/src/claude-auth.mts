@@ -110,11 +110,10 @@ export async function runClaudeAuthCommand(args: string[], env: NodeJS.ProcessEn
     return 0;
   }
   if (command === 'disconnect') {
-    // Stop admitting new subscription calls even when the official logout fails.
-    writeClaudeAuthMode(null, env);
     if (!await officialAuth('logout', env)) {
-      process.stderr.write('Claude is disabled; official subscription logout did not complete. Retry disconnect.\n'); return 1;
+      process.stderr.write('Official Claude subscription logout did not complete. The saved Claude mode is unchanged and the bridge login may still be active. Retry with "use-my-llm claude-auth disconnect".\n'); return 1;
     }
+    writeClaudeAuthMode(null, env);
     printStatus(env); return 0;
   }
   process.stderr.write('Usage: use-my-llm claude-auth <status|connect|disconnect|mode api-key|mode subscription|mode off>\n');

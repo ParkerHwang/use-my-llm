@@ -2,11 +2,13 @@
 //
 // These are skipped unless USE_MY_LLM_REAL_CLI=1, because they start real
 // binaries and reach the providers' servers. Each test says what it needs.
-// They only ever read made-up fixtures, including in tests that require a real login.
+// Most checks read made-up fixtures. The Claude subscription check explicitly
+// opts into reading and continuing a copy of a real local Claude Code session.
 //
 //   USE_MY_LLM_REAL_CLI=1                      real binaries, made-up data, no login needed
 //   USE_MY_LLM_REAL_CODEX_LOGIN=1              also send one real Codex request (uses your Codex allowance)
 //   LOCALHOSTAGENT_CODEX_FORK_HOME=/path      optionally test a separate, already signed-in Codex home
+//   USE_MY_LLM_REAL_CLAUDE_LOGIN=1            continue a real Claude session using the bridge subscription login
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -21,6 +23,7 @@ import { defaultLocations } from '../dist/context/sources/index.mjs';
 import { createContextStore } from '../dist/context/store.mjs';
 import { agyAcpAvailable, findAgy } from '../dist/providers/antigravity.mjs';
 import { findClaude, forkClaude, claudePrintArgs } from '../dist/providers/claude.mjs';
+import { createProviderRegistry } from '../dist/providers/index.mjs';
 import { findCodex, forkCodex, runCodex } from '../dist/providers/codex.mjs';
 import { allFixtures, IDS } from '../test-support/fixtures.mjs';
 
@@ -156,9 +159,17 @@ test('real Claude subscription: continues a real approved session copy and prese
     assert.equal(claudeSubscriptionConnected(process.env, claude), true, 'sign in with use-my-llm claude-auth connect first');
     const before = claudeOriginalHash();
     const root = mkdtempSync(join(tmpdir(), 'use-my-llm-real-session-'));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
     const locations = { ...defaultLocations(), claudeHome: join(homedir(), '.claude'), dataDir: root };
     const store = createContextStore({ dataDir: root });
+    t.after(() => {
+      try { store.revokeOrigin(SITE); }
+      finally {
+        rmSync(root, { recursive: true, force: true });
+        const after = claudeOriginalHash();
+        assert.deepEqual(after, before, 'all original Claude files are byte-for-byte unchanged, including after failure');
+        t.diagnostic(`Original Claude SHA-256 before=${before.digest} after=${after.digest}, files=${after.count}.`);
+      }
+    });
     const sessions = listSources(locations, { apps: ['claude-code'] }).items.filter(item => item.kind === 'session');
     let meta;
     for (const item of sessions) {
@@ -167,11 +178,12 @@ test('real Claude subscription: continues a real approved session copy and prese
     }
     assert.ok(meta, 'a readable real Claude session must exist');
     const [{ fork }] = store.resolve(SITE, [meta.handle]);
-    const { reply } = await forkClaude({ fork, executable: claude, authMode: 'subscription',
-      subscriptionConfigDir: claudeSubscriptionDirectory(), message: 'Reply with exactly CLAUDE_COPY_OK and nothing else.' });
-    assert.match(reply, /CLAUDE_COPY_OK/);
+    const registry = createProviderRegistry();
+    const { reply } = await registry.runProvider({ provider: 'claude', fork, history: [],
+      message: 'Reply with exactly CLAUDE_COPY_OK and nothing else.' });
+    assert.ok(reply.trim() === 'CLAUDE_COPY_OK', 'the reply must contain only the expected verification marker');
     assert.deepEqual(claudeOriginalHash(), before, 'all original Claude files are byte-for-byte unchanged');
     store.revokeOrigin(SITE);
     assert.throws(() => store.resolve(SITE, [meta.handle]), { code: 'CONTEXT_DENIED' });
-    t.diagnostic('Real session copy returned a model reply; original Claude tree and config hashes unchanged.');
+    t.diagnostic('Real approved session copy returned the expected verification marker through the bridge provider registry.');
   });

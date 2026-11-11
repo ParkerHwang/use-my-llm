@@ -76,6 +76,9 @@ struct BridgeCommand: Sendable {
             }
             child.waitUntilExit()
             guard child.terminationStatus == 0 else {
+                if arguments == ["disconnect"] {
+                    throw PickerError(message: "Official Claude subscription logout did not complete. The saved Claude mode is unchanged and the bridge login may still be active. Choose Disconnect Claude Subscription to retry.")
+                }
                 throw PickerError(message: "Claude sign-in could not be updated. Check the official Claude Code CLI and try again.")
             }
             return try JSONDecoder().decode(ClaudeAuthStatus.self, from: data)
