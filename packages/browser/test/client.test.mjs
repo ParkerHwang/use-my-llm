@@ -904,7 +904,7 @@ test('the token is not reachable from the client object, request URLs or the con
   await pairAndComplete(ctx);
 
   assert.ok(Object.isFrozen(ctx.client));
-  assert.deepEqual(Object.keys(ctx.client).sort(), ['chat', 'completePairing', 'disconnect', 'generate', 'pair', 'status']);
+  assert.deepEqual(Object.keys(ctx.client).sort(), ['chat', 'completePairing', 'contexts', 'disconnect', 'generate', 'pair', 'status']);
   for (const value of Object.values(ctx.client)) assert.equal(typeof value, 'function');
   assert.ok(!JSON.stringify(ctx.client).includes(TOKEN));
 
