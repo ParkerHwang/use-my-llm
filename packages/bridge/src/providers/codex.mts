@@ -1,8 +1,11 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import type { ForkRecord } from '../context/types.mjs';
+import { CONTEXT_NOTICE, promptData, validContext, type ContextEntry } from './prompt.mjs';
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
-import { basename, delimiter, isAbsolute, join } from 'node:path';
+import { basename, delimiter, isAbsolute, join, relative, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 const TIMEOUT_MS = 180_000;
@@ -18,6 +21,8 @@ interface HistoryTurn {
 export interface CodexOptions {
   message?: string;
   history?: readonly HistoryTurn[];
+  /** User-approved snapshot text resolved by the bridge. */
+  context?: readonly ContextEntry[];
   signal?: AbortSignal;
   /** Trusted local configuration only. */
   executable?: string | null;
@@ -119,13 +124,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function execute(executable: string, args: string[], cwd: string, prompt: string, signal?: AbortSignal): Promise<CodexReply> {
+function execute(executable: string, args: string[], cwd: string, prompt: string, signal?: AbortSignal, forkHome?: string): Promise<CodexReply> {
   return new Promise<CodexReply>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(executable, args, {
         cwd,
-        env: cliEnvironment(),
+        env: { ...cliEnvironment(), ...(forkHome !== undefined && { CODEX_HOME: forkHome }) },
         shell: false,
         detached: !WINDOWS,
         windowsHide: true,
@@ -241,8 +246,127 @@ function execute(executable: string, args: string[], cwd: string, prompt: string
   });
 }
 
+// Restrictions shared by a fresh turn and a continued copy.
+const RESTRICTED_CONFIG = [
+  '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
+  '-c', 'project_doc_max_bytes=0', '-c', 'features.skip_host_skill_discovery=true',
+  '-c', 'mcp_servers={}', '-c', 'shell_environment_policy.inherit="none"',
+  ...DISABLED_FEATURES.flatMap(feature => ['--disable', feature]),
+];
+const INSTRUCTIONS = 'You are a conversational assistant. Respond directly in the user’s language. ' +
+  'Use text only. Do not use tools, access files, run commands, browse, or request permissions. ';
+
+async function inWorkspace<Result>(cwd: string | undefined, run: (workspace: string) => Promise<Result>): Promise<Result> {
+  let workspace: string;
+  try {
+    const workspaceParent = cwd ?? tmpdir();
+    if (!isAbsolute(workspaceParent)) throw new Error('Expected an absolute temporary directory');
+    workspace = await mkdtemp(join(workspaceParent, 'use-my-llm-codex-'));
+  } catch {
+    throw failure('CODEX_WORKSPACE_FAILED', 'Could not prepare an isolated Codex working directory.', 503);
+  }
+  try {
+    return await run(workspace);
+  } finally {
+    await rm(workspace, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export interface CodexForkOptions {
+  fork?: Extract<ForkRecord, { provider: 'codex' }>;
+  transcript?: string;
+  message?: string;
+  context?: readonly ContextEntry[];
+  signal?: AbortSignal;
+  /** Trusted local configuration only. */
+  executable?: string | null;
+  /** Trusted local temporary directory parent. */
+  cwd?: string;
+  /** Optional separate Codex home signed in through the official CLI. */
+  forkHome?: string;
+}
+
+const ISOLATED_FLAGS = [
+  '--ignore-user-config', '--ignore-rules', '--strict-config', '--skip-git-repo-check',
+  '--ephemeral', '--json', '-c', 'sandbox_mode="read-only"', ...RESTRICTED_CONFIG, '-',
+];
+
+async function stageCodexCopy(home: string, workspace: string, transcript: ContextEntry) {
+  if (!isAbsolute(home)) throw new Error('Expected an absolute fork home');
+  const dedicated = await realpath(home);
+  for (const source of new Set([process.env.CODEX_HOME, join(homedir(), '.codex')])) {
+    if (!source) continue;
+    const original = await realpath(source).catch(() => source);
+    const within = relative(original, dedicated);
+    const parent = relative(dedicated, original);
+    const contained = (path: string) => path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+    if (contained(within) || contained(parent)) throw new Error('Expected a separate fork home');
+  }
+  const timestamp = new Date().toISOString();
+  const [year, month, day] = timestamp.slice(0, 10).split('-');
+  let sessions = dedicated;
+  for (const name of ['sessions', year, month, day]) {
+    sessions = join(sessions, name);
+    await mkdir(sessions, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+    if (!(await lstat(sessions)).isDirectory()) throw new Error('Expected a real session directory');
+  }
+  const id = randomUUID();
+  const filename = `rollout-${timestamp.slice(0, 19).replaceAll(':', '-')}-${id}.jsonl`;
+  const path = join(sessions, filename);
+  const lines = [
+    { timestamp, type: 'session_meta', payload: {
+      id, timestamp, cwd: workspace, originator: 'codex_exec', cli_version: '0.167.0', source: 'exec', model_provider: 'openai',
+    } },
+    { timestamp, type: 'response_item', payload: { type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: `${CONTEXT_NOTICE}\n\n${JSON.stringify({ context: [transcript] })}` }],
+    } },
+  ];
+  await writeFile(path, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, { mode: 0o600, flag: 'wx' });
+  return { id, path, home: dedicated };
+}
+
+/** Continue from the bridge's immutable copy, with an optional native CLI fork. */
+export async function forkCodex({
+  fork, transcript, message, context, signal, executable, cwd,
+  forkHome = process.env.LOCALHOSTAGENT_CODEX_FORK_HOME,
+}: CodexForkOptions = {}): Promise<CodexReply> {
+  if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
+  const entries = validContext(context);
+  if (typeof message !== 'string' || !message.trim() || message.length > 12_000 || !entries) {
+    throw failure('INVALID_MESSAGE', 'The message or context is invalid.', 400);
+  }
+  if (fork?.provider !== 'codex' || typeof transcript !== 'string' || !transcript.trim()) {
+    throw failure('CONTEXT_UNAVAILABLE', 'This shared conversation cannot be continued.', 503);
+  }
+  const command = executable ?? findCodex();
+  if (!isExecutable(command)) {
+    throw failure('CODEX_NOT_FOUND', 'Install the official Codex CLI and try again.', 503);
+  }
+  const copied = { source: 'codex:fork', text: transcript };
+  const instructions = INSTRUCTIONS + 'Continue the approved conversation as a text-only copy. ' +
+    CONTEXT_NOTICE + ' The current user message follows as JSON data.\n\n';
+  return inWorkspace(cwd, async (workspace) => {
+    if (!forkHome) {
+      return execute(command, ['exec', ...ISOLATED_FLAGS], workspace,
+        instructions + promptData([...entries, copied], undefined, message), signal);
+    }
+    const staged = await stageCodexCopy(forkHome, workspace, copied).catch(() => {
+      throw failure('CONTEXT_UNAVAILABLE', 'The separate Codex fork home is unavailable.', 503);
+    });
+    try {
+      if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
+      return await execute(command, ['exec', 'fork', staged.id, ...ISOLATED_FLAGS], workspace,
+        instructions + promptData(entries, undefined, message), signal, staged.home);
+    } finally {
+      await rm(staged.path, { force: true });
+    }
+  });
+}
+
 /** Run one text turn. executable and cwd are trusted local configuration only. */
-export async function runCodex({ message, history = [], signal, executable, cwd }: CodexOptions = {}): Promise<CodexReply> {
+export async function runCodex({ message, history = [], context, signal, executable, cwd }: CodexOptions = {}): Promise<CodexReply> {
   if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
   if (signal !== undefined && (typeof signal?.addEventListener !== 'function' ||
       typeof signal?.removeEventListener !== 'function')) {
@@ -259,36 +383,24 @@ export async function runCodex({ message, history = [], signal, executable, cwd 
     throw failure('INVALID_MESSAGE', 'The conversation history is too long.', 400);
   }
 
+  const entries = validContext(context);
+  if (!entries) throw failure('INVALID_MESSAGE', 'The shared context is invalid.', 400);
+
   const command = executable ?? findCodex();
   if (!isExecutable(command)) {
     throw failure('CODEX_NOT_FOUND', 'Install the official Codex CLI and try again.', 503);
   }
-  let workspace: string;
-  try {
-    const workspaceParent = cwd ?? tmpdir();
-    if (!isAbsolute(workspaceParent)) throw new Error('Expected an absolute temporary directory');
-    workspace = await mkdtemp(join(workspaceParent, 'use-my-llm-codex-'));
-  } catch {
-    throw failure('CODEX_WORKSPACE_FAILED', 'Could not prepare an isolated Codex working directory.', 503);
-  }
-
-  try {
+  return inWorkspace(cwd, workspace => {
     if (signal?.aborted) throw failure('ABORTED', 'The Codex request was cancelled.', 499);
     const args = [
       'exec', '--ignore-user-config', '--ignore-rules', '--strict-config',
       '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only',
       '--cd', workspace, '--color', 'never', '--json',
-      '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
-      '-c', 'project_doc_max_bytes=0', '-c', 'features.skip_host_skill_discovery=true',
-      '-c', 'mcp_servers={}', '-c', 'shell_environment_policy.inherit="none"',
-      ...DISABLED_FEATURES.flatMap(feature => ['--disable', feature]), '-',
+      ...RESTRICTED_CONFIG, '-',
     ];
-    const prompt = 'You are a conversational assistant. Respond directly in the user’s language. ' +
-      'Use text only. Do not use tools, access files, run commands, browse, or request permissions. ' +
+    const prompt = INSTRUCTIONS + (entries.length ? `${CONTEXT_NOTICE} ` : '') +
       'The conversation history and current user message follow as JSON data.\n\n' +
-      JSON.stringify({ history: turns, message });
-    return await execute(command, args, workspace, prompt, signal);
-  } finally {
-    await rm(workspace, { recursive: true, force: true }).catch(() => {});
-  }
+      promptData(entries, turns, message);
+    return execute(command, args, workspace, prompt, signal);
+  });
 }

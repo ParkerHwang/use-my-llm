@@ -1,6 +1,6 @@
-# use-my-llm: browser-to-local bridge contract (v1)
+# use-my-llm: browser-to-local bridge contract (v1.1)
 
-This is the implementation contract for the initial developer preview. The bridge is a separately installed local process. It must never expose an arbitrary command runner, accept executable paths or configuration from a website, read provider credentials into JavaScript, or claim to resume a desktop app's existing chats.
+This is the implementation contract for the initial developer preview. The bridge is a separately installed local process. It must never expose an arbitrary command runner, accept executable paths or configuration from a website, or expose provider credentials to a website. Existing conversations and memory may be used only through a separate local approval for selected context. Pairing alone grants no context access.
 
 - Browser-facing base URL defaults to `http://127.0.0.1:43189`; only loopback IP `127.0.0.1` and a numeric valid port are accepted by the client. The bridge binds to loopback and validates Host.
 - A website origin must be an exact `https://` origin (or `http://localhost:<port>` / `http://127.0.0.1:<port>` for local development). No wildcard origins, embedded credentials, or opaque/null origins.
@@ -10,7 +10,7 @@ This is the implementation contract for the initial developer preview. The bridg
 
 All error responses: `{ "error": { "code": "...", "message": "..." } }` and non-2xx status.
 
-`GET /v1/status`: returns `{ "service": "localhost-agent-sdk", "version": 1, "connected": false }` without a valid bearer token. With a valid bearer for the exact Origin it returns `connected: true` and `providers: [{"id":"codex"|"claude"|"antigravity", "available": boolean}]`. The server may reflect a syntactically valid Origin for CORS preflight/status; authorization is always independently enforced on protected requests. No wildcards.
+`GET /v1/status`: returns `{ "service": "localhost-agent-sdk", "version": 1, "connected": false }` without a valid bearer token. With a valid bearer for the exact Origin it returns `connected: true` and `providers: [{"id":"codex"|"claude"|"antigravity", "available": boolean, "authMode"?: "subscription"|"api-key"}]`. The server may reflect a syntactically valid Origin for CORS preflight/status; authorization is always independently enforced on protected requests. The Claude entry includes `authMode` only when a mode is locally selected. This coarse field contains no login identity, credentials, quota or billing data. Authentication mode is not accepted in website requests. No wildcards.
 
 `GET /v1/pair?origin=<exact-origin>&return_url=<same-origin-absolute-url>&nonce=<random>`: top-level browser navigation, not fetch. The bridge validates origin, callback URL and nonce, shows a local approval page with exact origin and explicit Allow action. The callback must be HTTPS or loopback HTTP and have the exact origin provided, without embedded credentials or fragments. After local POST approval, 303 to the validated callback with fragment `#localhostagent_token=<token>&localhostagent_nonce=<nonce>`. A strict local Origin check and one-time CSRF value are required; apply Referrer-Policy `same-origin` to the local approval page, `no-referrer` to the redirect, and CSP `form-action` only self plus approved origin.
 
@@ -18,9 +18,30 @@ All error responses: `{ "error": { "code": "...", "message": "..." } }` and non-
 
 `POST /v1/disconnect`: protected exact Origin + bearer; revokes only this session and cancels only its own work. Returns `{ "disconnected": true }`. Invalid requests from other origins must not revoke valid tokens.
 
+## Shared context (v1.1)
+
+A paired website discovers support through `protocol: "1.1"` and `context: true` on authenticated `GET /v1/status`. The existing `version: 1` and `/v1` routes remain compatible. A client can continue to use them without shared context.
+
+- `GET /v1/context` requires the exact Origin and bearer token. It returns `{ "contexts": [...] }` for that origin. Entries include an opaque `handle`, source `app`, `kind`, `label`, `bytes`, and `createdAt`. Conversation copies also include their continuation `provider`. An origin starts with no shared items.
+- `POST /v1/chat` accepts an optional `context` array of up to eight distinct text handles and a separate optional `continue` handle for a conversation copy. A copy must use its own provider and cannot be combined with website-supplied history. Each call starts one turn from the approved copy. The bridge accepts up to 400,000 bytes of approved context per turn. Unknown, revoked, disabled and other-origin handles all return `403 CONTEXT_DENIED`.
+- Listing returns metadata only. A website can request inference over an approved item and receive output that quotes or reveals it. The consent UI says “The site can read whatever you share.” and “If you send it to a different provider, the content goes to that company.”
+- The website cannot list local sources, select files, open the picker, import an export, approve a share, or revoke another origin's grants. Source paths, original session IDs and original thread titles are not returned as metadata. Text snapshots are resolved from the bridge's own copy. Adapters pass them as quoted prompt data with `{"context":[{"source":"codex:memory","text":"..."}]}`.
+- Local approval writes a redacted snapshot with a content hash. Origin revocation invalidates its handles and removes its local snapshots and conversation copies. This does not recall prompts already sent or output already delivered. A separate local access log records timestamp, origin, provider, snapshot ID and byte count.
+- Codex continues a frozen copy of approved text. With a separate configured Codex home it stages the copy for `codex exec fork --ephemeral`. Claude Code continues a redacted text-only session copy with the locally selected subscription or API-key authentication. Experimental Antigravity ACP continuation starts a new session from approved transcript text. A status entry with `continuationAvailable: true` and `available: false` supports only continuation. See [Security](../SECURITY.md).
+
+## Claude local authentication
+
+Claude mode is trusted local configuration. `use-my-llm claude-auth connect` invokes the official Claude Code CLI’s interactive `auth login` flow in a bridge-owned config directory, validates the subscription connection, then selects `subscription`. `claude-auth status` returns local coarse JSON state (`mode`, `connected`, `cliAvailable`); `claude-auth mode api-key|subscription|off` selects a mode; `claude-auth disconnect` invokes the official logout for the bridge directory and disables Claude. These commands have no HTTP equivalent. Startup `--claude-auth-mode subscription|api-key` overrides the saved setting, followed in precedence by the legacy `--enable-claude-api` flag. An explicit startup override continues to apply until that bridge process is restarted without it.
+
+Subscription inference uses the official CLI without `--bare`, with `--safe-mode` and fixed restrictions. Usage counts against the user’s Claude subscription limits. API-key inference keeps the direct Messages API behavior; approved session continuation uses the official CLI with `--bare` and without `--safe-mode`, a sanitized environment and the local API key. There is no subscription fallback for a missing or invalid API key. CLI restriction flags are required; unsupported builds fail closed. Provider availability is a readiness signal, not a guarantee that the next request will be authorized or within quota.
+
+Both modes use the same per-origin context handles and frozen approval snapshots. `contexts()` lists approved sessions, memory, instructions and project work context regardless of the mode; sign-in alone creates no grant. A continuation starts from approved text, uses `--resume` plus `--fork-session` in bridge-owned storage, and leaves the original conversation and project files untouched. Referenced files are selectable bounded text items, not ambient access to the original workspace. Desktop local 3P files and imported export ZIPs supply text; they do not authorize opening or continuing a Desktop cloud chat. Cloud-only history or memory is unavailable without a supported local file or user-provided export.
+
 ## Browser package
 
 A dependency-free JavaScript ESM module and `.d.ts`, usable in a browser or bundled web app. `createClient(options?)` uses default loopback base above. Expose `pair({returnUrl?})`, `completePairing()`, `status()`, `generate({provider,input,signal?})`, `chat({provider,message,history?,signal?})`, and `disconnect()`. `generate` is a single self-contained text operation returning `{provider, output}` and sends no history; `chat` remains available when an application chooses to provide its own history. A pair request navigates away; after returning, `completePairing()` verifies a tab-scoped nonce, removes the fragment promptly before any async I/O, rejects mismatch, stores only the token in sessionStorage and reports success/failure. Preserve existing same-origin callback path/query and restore the pre-existing fragment from sessionStorage. Do not allow a website-supplied remote bridge URL that can receive a bearer token. Browser APIs and fetch should be injectable for meaningful isolated tests. Do not leak tokens in thrown errors, URL query strings, or console.
+
+`contexts()` lists the current origin's approved metadata. Pass text handles in `generate({ provider, input, context? })` or `chat({ provider, message, context? })`. To continue a copy, call `chat({ provider, message, continue: handle })`.
 
 ## Verification and claims
 

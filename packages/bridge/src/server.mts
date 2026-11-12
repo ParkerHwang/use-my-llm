@@ -1,6 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
+import {
+  ContextError, HANDLE_PATTERN, MAX_CONTEXT_HANDLES,
+  type ContextEntry, type ForkRecord, type PublicContext, type ResolvedContext,
+} from "./context/types.mjs";
 
 const HOST = "127.0.0.1";
 const PROVIDERS = ["codex", "claude", "antigravity"] as const;
@@ -28,10 +32,29 @@ interface ChatRequest {
   provider: ProviderId;
   message: string;
   history: ChatTurn[];
+  /** Opaque context handles (protocol v1.1). */
+  context: string[];
+  /** Opaque handle of a session shared as a continuable copy (protocol v1.1). */
+  continueHandle?: string;
 }
 
-export interface ProviderRequest extends ChatRequest {
+export interface ProviderRequest {
+  provider: ProviderId;
+  message: string;
+  history: ChatTurn[];
+  /** User-approved snapshot text, already resolved by the bridge. Present only when a request uses v1.1 context. */
+  context?: ContextEntry[];
+  /** Private details of a user-approved session copy to continue. */
+  fork?: ForkRecord;
+  forkTranscript?: string;
   signal: AbortSignal;
+}
+
+/** The part of the per-website permission store that the bridge uses. */
+export interface ContextAccess {
+  list(origin: string): PublicContext[];
+  resolve(origin: string, handles: readonly string[]): ResolvedContext[];
+  logAccess(entry: { origin: string; provider: string; snapshot: string; bytes: number }): void;
 }
 
 export interface ProviderReply {
@@ -40,8 +63,12 @@ export interface ProviderReply {
 }
 
 export interface ProviderStatus {
+  /** Claude authentication selected locally; no credentials are returned. */
+  authMode?: 'subscription' | 'api-key';
   id: ProviderId;
   available: boolean;
+  /** Continuation is offered even when ordinary inference is unavailable. */
+  continuationAvailable?: true;
 }
 
 export interface BridgeOptions {
@@ -53,6 +80,8 @@ export interface BridgeOptions {
   pairingTtlMs?: number;
   requestTimeoutMs?: number;
   allowedOrigins?: readonly string[];
+  /** Enables protocol v1.1 context handles. Without it every handle is refused. */
+  context?: ContextAccess;
 }
 
 export interface Bridge {
@@ -97,6 +126,9 @@ const PROVIDER_ERRORS = new Map<string, readonly [number, string]>([
   ["PROVIDER_OUTPUT_LIMIT", [502, "The provider returned too much output."]],
   ["PROVIDER_ABORTED", [409, "The request was canceled."]],
   ["INVALID_REQUEST", [400, "The request is invalid."]],
+  ["CONTEXT_TOO_LARGE", [413, "The selected context is too large for this provider."]],
+  ["CONTEXT_UNAVAILABLE", [503, "This shared conversation cannot be continued with the current local configuration."]],
+  ["PROVIDER_TOOL_ACTIVITY", [502, "The provider attempted tool activity, so the reply was discarded."]],
 ]);
 
 class RequestError extends Error {
@@ -164,7 +196,8 @@ function approvalPage(res: ServerResponse, origin: string, csrf: string): void {
   `, origin);
 }
 
-function parseOrigin(origin: unknown): string | null {
+/** Accept only an exact https origin, or http://localhost:<port> / http://127.0.0.1:<port>. */
+export function parseOrigin(origin: unknown): string | null {
   if (typeof origin !== "string" || origin.length > 300) return null;
   try {
     const url = new URL(origin);
@@ -284,10 +317,10 @@ function parseChat(raw: string): ChatRequest {
   } catch {
     throw new RequestError(400, "INVALID_JSON", "The request body must be valid JSON.");
   }
-  if (!hasOnlyKeys(body, ["provider", "message", "history"])) {
-    throw new RequestError(400, "INVALID_REQUEST", "Only provider, message, and history are accepted.");
+  if (!hasOnlyKeys(body, ["provider", "message", "history", "context", "continue"])) {
+    throw new RequestError(400, "INVALID_REQUEST", "Only provider, message, history, context, and continue are accepted.");
   }
-  const { provider, message, history = [] } = body;
+  const { provider, message, history = [], context = [], continue: continueHandle } = body;
   if (!isProviderId(provider)) {
     throw new RequestError(400, "INVALID_PROVIDER", "Select a supported provider ID.");
   }
@@ -296,7 +329,18 @@ function parseChat(raw: string): ChatRequest {
     || !history.every(isChatTurn)) {
     throw new RequestError(400, "INVALID_MESSAGE", "The message or history is invalid.");
   }
-  return { provider, message, history };
+  // Websites refer to shared context only by opaque handle. Ids, names and
+  // paths are never accepted here.
+  const isHandle = (value: unknown): value is string => typeof value === "string" && HANDLE_PATTERN.test(value);
+  if (!Array.isArray(context) || context.length > MAX_CONTEXT_HANDLES || !context.every(isHandle)
+    || new Set(context).size !== context.length
+    || (continueHandle !== undefined && (!isHandle(continueHandle) || context.includes(continueHandle)))) {
+    throw new RequestError(400, "INVALID_CONTEXT", "The context handles are invalid.");
+  }
+  if (continueHandle !== undefined && history.length) {
+    throw new RequestError(400, "INVALID_CONTEXT", "A continued conversation cannot also carry history.");
+  }
+  return { provider, message, history, context, ...(continueHandle !== undefined && { continueHandle }) };
 }
 
 function allowAttempt(attempts: number[], now: number, max: number, window: number): boolean {
@@ -326,6 +370,7 @@ export function createBridge({
   pairingTtlMs = 2 * MINUTE,
   requestTimeoutMs = 3 * MINUTE,
   allowedOrigins,
+  context: contextAccess,
 }: BridgeOptions): Bridge {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError("Invalid bridge port.");
   if (typeof runProvider !== "function" || typeof getProviders !== "function" || typeof now !== "function") {
@@ -334,6 +379,10 @@ export function createBridge({
   duration(sessionTtlMs, "sessionTtlMs");
   duration(pairingTtlMs, "pairingTtlMs");
   duration(requestTimeoutMs, "requestTimeoutMs");
+  if (contextAccess !== undefined && (typeof contextAccess?.list !== "function"
+    || typeof contextAccess.resolve !== "function" || typeof contextAccess.logAccess !== "function")) {
+    throw new TypeError("context must provide list, resolve, and logAccess.");
+  }
   if (allowedOrigins !== undefined
     && (!Array.isArray(allowedOrigins) || allowedOrigins.some((origin) => !parseOrigin(origin)))) {
     throw new TypeError("allowedOrigins must contain exact supported origins.");
@@ -383,7 +432,10 @@ export function createBridge({
     if (!Array.isArray(list)) throw new TypeError("getProviders must return an array.");
     return PROVIDERS.map((id) => ({
       id,
+      ...(id === 'claude' && ['subscription', 'api-key'].includes(list.find(item => item?.id === id)?.authMode ?? '')
+        && { authMode: list.find(item => item?.id === id)!.authMode }),
       available: list.some((item) => item?.id === id && item.available === true),
+      ...(list.some((item) => item?.id === id && item.continuationAvailable === true) && { continuationAvailable: true as const }),
     }));
   }
 
@@ -442,6 +494,39 @@ export function createBridge({
     res.end();
   }
 
+  /**
+   * Turn a request's handles into approved snapshot text for exactly this
+   * origin. A handle that is unknown, revoked or owned by another website is
+   * refused with one indistinguishable error.
+   */
+  function resolveContext(request: ChatRequest, origin: string): { used: ResolvedContext[]; entries: ContextEntry[]; fork?: ForkRecord; forkTranscript?: string } {
+    const handles = request.continueHandle ? [...request.context, request.continueHandle] : request.context;
+    if (!handles.length) return { used: [], entries: [] };
+    if (!contextAccess) throw new RequestError(403, "CONTEXT_DENIED", "This context is not shared with this website.");
+    let used: ResolvedContext[];
+    try {
+      used = contextAccess.resolve(origin, handles);
+    } catch (error) {
+      if (error instanceof ContextError && error.code === "CONTEXT_TOO_LARGE") {
+        throw new RequestError(413, "CONTEXT_TOO_LARGE", "The selected context is too large for one request.");
+      }
+      throw new RequestError(403, "CONTEXT_DENIED", "This context is not shared with this website.");
+    }
+    const continued = request.continueHandle ? used[used.length - 1] : undefined;
+    const attached = continued ? used.slice(0, -1) : used;
+    if (attached.some((item) => item.kind === "fork") || (continued && (continued.kind !== "fork" || !continued.fork))) {
+      throw new RequestError(400, "INVALID_CONTEXT", "Use context for shared text and continue for a shared conversation copy.");
+    }
+    if (continued?.fork && continued.fork.provider !== request.provider) {
+      throw new RequestError(400, "CONTEXT_PROVIDER_MISMATCH", "This conversation copy can only be continued with its own provider.");
+    }
+    return {
+      used,
+      entries: attached.map((item) => item.entry),
+      ...(continued?.fork && { fork: continued.fork, forkTranscript: continued.entry.text }),
+    };
+  }
+
   async function chat(req: IncomingMessage, res: ServerResponse, origin: string | null): Promise<void> {
     const request = parseChat(await readBody(req, res, MAX_REQUEST_BYTES, "application/json"));
     // Reading a request body is asynchronous. Recheck authentication immediately
@@ -453,9 +538,11 @@ export function createBridge({
     if (session.active || executions.size >= MAX_ACTIVE) {
       return fail(res, 409, "BUSY", "Wait for an active request to finish.");
     }
-    if (!providers().find(({ id }) => id === request.provider)?.available) {
+    const provider = providers().find(({ id }) => id === request.provider);
+    if (!(provider?.available || (request.continueHandle && provider?.continuationAvailable))) {
       return fail(res, 503, "PROVIDER_UNAVAILABLE", "This provider is unavailable.");
     }
+    const shared = resolveContext(request, session.origin);
     const time = now();
     if (!allowAttempt(session.attempts, time, 30, HOUR) || !allowAttempt(chatAttempts, time, 120, HOUR)) {
       return fail(res, 429, "RATE_LIMIT", "The bridge request limit was reached. Try again later.");
@@ -479,7 +566,18 @@ export function createBridge({
     const execution: Promise<ExecutionOutcome> = Promise.resolve()
       .then(() => {
         controller.signal.throwIfAborted();
-        return runProvider({ ...request, signal: controller.signal });
+        // Metadata only: which snapshot left the machine, for which site and provider.
+        for (const item of shared.used) {
+          contextAccess?.logAccess({ origin: session.origin, provider: request.provider, snapshot: item.id, bytes: item.bytes });
+        }
+        return runProvider({
+          provider: request.provider,
+          message: request.message,
+          history: request.history,
+          ...(shared.entries.length && { context: shared.entries }),
+          ...(shared.fork && { fork: shared.fork, forkTranscript: shared.forkTranscript }),
+          signal: controller.signal,
+        });
       })
       .then<ExecutionOutcome, ExecutionOutcome>(
         (result) => ({ kind: "reply", result }),
@@ -504,6 +602,7 @@ export function createBridge({
         return fail(res, 401, "UNAUTHORIZED", "Connect this website again.");
       }
       if (!authenticate(req, origin)) return fail(res, 401, "UNAUTHORIZED", "Connect this website again.");
+      if (shared.used.length) resolveContext(request, session.origin);
       if (outcome.kind === "error") {
         const error = outcome.error;
         if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
@@ -557,6 +656,7 @@ export function createBridge({
     const methods: Readonly<Record<string, "GET" | "POST" | undefined>> = {
       "/v1/status": "GET",
       "/v1/chat": "POST",
+      "/v1/context": "GET",
       "/v1/disconnect": "POST",
     };
     const method = methods[url.pathname];
@@ -580,9 +680,15 @@ export function createBridge({
         version: 1,
         connected: Boolean(auth),
         ...(auth && { providers: providers() }),
+        // Advertised only by a bridge that has a context store configured.
+        ...(auth && contextAccess && { protocol: "1.1", context: true }),
       });
     }
     if (!auth) return fail(res, 401, "UNAUTHORIZED", "Connect this website again.");
+    if (url.pathname === "/v1/context") {
+      // Only what this exact origin was given: opaque handles and coarse metadata.
+      return json(res, 200, { contexts: contextAccess ? contextAccess.list(auth.session.origin) : [] });
+    }
     if (url.pathname === "/v1/disconnect") {
       revoke(auth.token, auth.session);
       return json(res, 200, { disconnected: true });

@@ -78,9 +78,14 @@ def include_bridge(resources: Path) -> None:
 
     # Copy only the known runtime files, never source, maps, declarations, or local data.
     runtime_files = (
-        "cli.mjs", "server.mjs", "providers/index.mjs", "providers/codex.mjs",
+        "cli.mjs", "server.mjs", "claude-auth.mjs", "providers/index.mjs", "providers/codex.mjs",
         "providers/claude.mjs", "providers/claude-api.mjs", "providers/antigravity.mjs",
-        "providers/google-sdk.mjs", "providers/google_sdk.py",
+        "providers/google-sdk.mjs", "providers/google_sdk.py", "providers/prompt.mjs",
+        "context/cli.mjs", "context/fork.mjs", "context/redact.mjs", "context/service.mjs",
+        "context/store.mjs", "context/types.mjs", "context/zip.mjs",
+        "context/sources/antigravity.mjs", "context/sources/claude-code.mjs",
+        "context/sources/claude-desktop.mjs", "context/sources/codex.mjs",
+        "context/sources/index.mjs", "context/sources/util.mjs",
     )
     for path in dist.rglob("*"):
         if path.is_symlink():
@@ -131,7 +136,8 @@ def build_app(app: Path, archive_path: Path, version: str, build_number: str) ->
     subprocess.run(
         [
             "/usr/bin/xcrun", "swiftc", "-O", "-target", f"arm64-apple-macosx{MINIMUM_MACOS}",
-            str(PACKAGE / "src" / "Launcher.swift"), "-o", str(macos / APP_EXECUTABLE),
+            str(PACKAGE / "src" / "Launcher.swift"), str(PACKAGE / "src" / "ContextPicker.swift"),
+            "-o", str(macos / APP_EXECUTABLE),
             "-framework", "AppKit",
         ],
         check=True,

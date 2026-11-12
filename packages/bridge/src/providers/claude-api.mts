@@ -1,3 +1,5 @@
+import { CONTEXT_NOTICE, validContext, type ContextEntry } from './prompt.mjs';
+
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2026-10-21';
 const DEFAULT_MODEL = 'claude-haiku-5-5';
@@ -15,6 +17,8 @@ interface HistoryTurn {
 export interface ClaudeApiOptions {
   message?: string;
   history?: readonly HistoryTurn[];
+  /** User-approved snapshot text resolved by the bridge. */
+  context?: readonly ContextEntry[];
   signal?: AbortSignal;
   /** Trusted local configuration only. */
   env?: NodeJS.ProcessEnv;
@@ -70,7 +74,11 @@ function localWorkspaceId(env: NodeJS.ProcessEnv): string | undefined {
   return workspaceId;
 }
 
-function requestBody(model: string, message: string | undefined, history: readonly HistoryTurn[]): string {
+function requestBody(
+  model: string, message: string | undefined, history: readonly HistoryTurn[], context?: readonly ContextEntry[],
+): string {
+  const entries = validContext(context);
+  if (!entries) throw new ClaudeApiError('INVALID_REQUEST');
   if (typeof message !== 'string' || !message.trim() || message.length > 12_000 ||
       !Array.isArray(history) || history.length > 24) {
     throw new ClaudeApiError('INVALID_REQUEST');
@@ -84,9 +92,17 @@ function requestBody(model: string, message: string | undefined, history: readon
     if (turn.content.trim()) messages.push({ role: turn.role, content: turn.content });
   }
   messages.push({ role: 'user', content: message });
-  const body = JSON.stringify({ model, max_tokens: MAX_TOKENS, messages });
-  if (Buffer.byteLength(body) > MAX_INPUT_BYTES) throw new ClaudeApiError('INVALID_REQUEST');
-  return body;
+  // The size limit covers what the website wrote; approved context has its own limit.
+  if (Buffer.byteLength(JSON.stringify({ model, max_tokens: MAX_TOKENS, messages })) > MAX_INPUT_BYTES) {
+    throw new ClaudeApiError('INVALID_REQUEST');
+  }
+  return JSON.stringify({
+    model,
+    max_tokens: MAX_TOKENS,
+    // Shared context travels as quoted JSON data, apart from the conversation turns.
+    ...(entries.length && { system: `${CONTEXT_NOTICE}\n\n${JSON.stringify({ context: entries })}` }),
+    messages,
+  });
 }
 
 function discard(stream: { cancel(): Promise<unknown> } | null) {
@@ -144,7 +160,7 @@ async function readReply(response: Response, signal: AbortSignal, apiKey: string
 // env and fetchImpl are trusted local process configuration. The bridge passes
 // only conversation content and a cancellation signal from the request path.
 export async function runClaudeApi({
-  message, history = [], signal, env = process.env, fetchImpl = globalThis.fetch,
+  message, history = [], context, signal, env = process.env, fetchImpl = globalThis.fetch,
 }: ClaudeApiOptions = {}): Promise<ClaudeApiReply> {
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new ClaudeApiError('INVALID_REQUEST');
   if (signal?.aborted) throw new ClaudeApiError('PROVIDER_ABORTED');
@@ -153,7 +169,7 @@ export async function runClaudeApi({
   const requestSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const body = requestBody(localModel(env), message, history);
+    const body = requestBody(localModel(env), message, history, context);
     const apiKey = claudeApiConfigured(env) ? env.ANTHROPIC_API_KEY : undefined;
     if (typeof apiKey !== 'string' || !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) {
       throw new ClaudeApiError('PROVIDER_UNAVAILABLE');

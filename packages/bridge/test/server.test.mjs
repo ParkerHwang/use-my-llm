@@ -103,6 +103,20 @@ function deferred() {
   return { promise, resolve };
 }
 
+test("paired status exposes only Claude's coarse authentication mode", async t => {
+  const { base } = await start(t, { getProviders: () => [
+    { id: 'claude', available: true, authMode: 'subscription', token: 'never-expose', email: 'private' },
+    { id: 'codex', available: true, authMode: 'api-key' },
+  ] });
+  const { csrf } = await beginPairing(base);
+  const response = await approve(base, csrf);
+  const token = new URLSearchParams(new URL(response.headers.get('location')).hash.slice(1)).get('localhostagent_token');
+  const body = await (await status(base, SITE_A, token)).json();
+  assert.deepEqual(body.providers.find(p => p.id === 'claude'), { id: 'claude', available: true, authMode: 'subscription' });
+  assert.deepEqual(body.providers.find(p => p.id === 'codex'), { id: 'codex', available: true });
+  assert.equal(JSON.stringify(body).includes('never-expose'), false);
+});
+
 test("approval preserves the same-origin callback and enables authorized chat", async (t) => {
   let invocation;
   const { base } = await start(t, {
